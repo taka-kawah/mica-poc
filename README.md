@@ -4,6 +4,9 @@ Proof-of-concept builds for **Mica**, a custom Markdown editor:
 Obsidian's pleasant writing experience, but WSL-first,
 keyboard-centric, and with no vault.
 
+> **Status:** PoC code lands in follow-up PRs; sections below describe
+> the target state.
+
 Spec: Notion 「Mica 仕様メモ（自作マークダウンエディタ）」 —
 see [`docs/notion-spec-summary.md`](docs/notion-spec-summary.md).
 Framework research as of 2026-11-15:
@@ -92,9 +95,13 @@ foot-gun: one wrong dependency makes Mica GPL.
 
 **Preliminary ranking: 1. Tauri + CodeMirror 6 · 2. egui · 3. GPUI.**
 
+The Notion spec currently rates GPUI most promising; this research-only
+ranking disagrees, and the PoC measurements will decide.
+
 ## Licenses
 
-- Mica PoC code in this repo: MIT OR Apache-2.0 (see each PoC's README).
+- Mica PoC code is intended to be dual-licensed MIT OR Apache-2.0;
+  the full LICENSE files ship with the first code PR.
 - Tauri: MIT OR Apache-2.0. CodeMirror 6: MIT. egui/eframe: MIT OR Apache-2.0.
 - GPUI: Apache-2.0.
 - **No GPL code is used anywhere in this repo.** Zed's editor crates
