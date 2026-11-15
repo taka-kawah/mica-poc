@@ -1,0 +1,15 @@
+[package]
+name = "mica-egui-poc"
+version = "0.1.0"
+edition = "2021"
+description = "Mica PoC: egui + eframe editor. Live preview built on mica-shared-core decorations."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+mica-shared-core = { workspace = true }
+eframe = "=0.37.0"
+egui = "=0.37.0"
+
+[[bin]]
+name = "mica-egui"
+path = "src/main.rs"

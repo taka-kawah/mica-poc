@@ -1,0 +1,14 @@
+[package]
+name = "mica-shared-core"
+version = "0.1.0"
+edition = "2021"
+description = "Framework-independent core for the Mica Markdown editor PoC: text buffer, Markdown structure, live-preview decorations, file tree, tabs, auto-save, keymap, command palette, and the WSL stdio bridge stub."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
