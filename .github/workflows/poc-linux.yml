@@ -1,0 +1,95 @@
+# Mica PoC — Linux CI: build and test every PoC on Ubuntu.
+#
+# Runs on every push and pull request. The Linux runner is the
+# authoritative check for the shared core and for headless behaviour.
+# GUI windows are exercised only through headless smoke tests
+# (xvfb-run); no human eyeball check happens here.
+name: PoC (Linux)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shared-core:
+    name: Shared core (tests, no display needed)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy (shared core)
+        run: cargo clippy -p mica-shared-core --all-targets -- -D warnings
+      - name: Test shared core
+        run: cargo test -p mica-shared-core
+
+  egui:
+    name: egui PoC (build + tests + headless smoke test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install eframe system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libwayland-dev libvulkan-dev pkg-config cmake
+      - name: Test egui PoC
+        run: cargo test -p mica-egui-poc
+      - name: Headless smoke test (Xvfb)
+        run: |
+          sudo apt-get install -y xvfb
+          xvfb-run -a cargo run -p mica-egui-poc -- --smoke-test sample-notes
+
+  tauri:
+    name: Tauri + CodeMirror 6 PoC (frontend + Rust backend)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: poc/tauri-codemirror/package-lock.json
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf libgtk-3-dev libayatana-appindicator3-dev libsoup-3.0-dev
+      - name: Install frontend dependencies
+        working-directory: poc/tauri-codemirror
+        run: npm ci
+      - name: Build frontend
+        working-directory: poc/tauri-codemirror
+        run: npm run build
+      - name: Test + build Rust backend
+        working-directory: poc/tauri-codemirror/src-tauri
+        run: |
+          cargo test
+          cargo build
+      # Full `cargo tauri build` produces the desktop bundle; it is
+      # slow but is the real packaging check, so it runs here too.
+      - name: Build Tauri bundle
+        working-directory: poc/tauri-codemirror
+        run: npx tauri build
+
+  gpui:
+    name: GPUI PoC (build + tests + headless smoke test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GPUI system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev pkg-config cmake clang
+      - name: Test GPUI PoC
+        run: cargo test -p mica-gpui-poc
+      - name: Headless smoke test (Xvfb)
+        run: |
+          sudo apt-get install -y xvfb
+          xvfb-run -a cargo run -p mica-gpui-poc -- --smoke-test sample-notes
