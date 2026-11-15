@@ -137,8 +137,25 @@ impl MicaApp {
         self.status_message = format!("opened {}", path.display());
     }
 
-    /// Close the tab at `index`, dropping its document.
-    fn close_tab(&mut self, index: usize) {
+    /// Close the tab at `index`, dropping its document. A document
+    /// with unsaved edits is saved first; when that save fails the tab
+    /// stays open (edits kept in memory) and the error is shown in the
+    /// status bar. Returns `true` when the tab was closed.
+    fn close_tab(&mut self, index: usize) -> bool {
+        let Some(path) = self.tabs.tabs().get(index).map(|tab| tab.path.clone()) else {
+            return false;
+        };
+        if let Some(document) = self.documents.get_mut(&path) {
+            if document.has_unsaved_changes() {
+                if let Err(error) = document.save_now() {
+                    self.status_message = format!(
+                        "not closing {}: save failed: {error} (edits kept)",
+                        path.display()
+                    );
+                    return false;
+                }
+            }
+        }
         if let Some(closed) = self.tabs.close(index) {
             self.documents.remove(&closed.path);
             self.status_message = format!("closed {}", closed.title);
@@ -149,6 +166,25 @@ impl MicaApp {
                 document.needs_focus = true;
             }
         }
+        true
+    }
+
+    /// Save every document with unsaved edits right now (used on
+    /// quit). Returns the error messages of the saves that failed.
+    fn flush_all(&mut self) -> Vec<String> {
+        let mut errors = Vec::new();
+        for (path, document) in &mut self.documents {
+            if !document.has_unsaved_changes() {
+                continue;
+            }
+            match document.save_now() {
+                Ok(()) => {
+                    self.tabs.set_dirty(path, false);
+                }
+                Err(error) => errors.push(format!("{}: {error}", path.display())),
+            }
+        }
+        errors
     }
 
     /// The active document, if any.
@@ -242,24 +278,19 @@ impl MicaApp {
                 true
             }
             "save" => {
-                if let Some(document) = self.active_document_mut() {
-                    match document.save_now() {
-                        Ok(()) => self.status_message = "saved".to_string(),
-                        Err(error) => {
-                            self.status_message = format!("save failed: {error}");
+                if let Some(path) = self.tabs.active_tab().map(|tab| tab.path.clone()) {
+                    if let Some(document) = self.documents.get_mut(&path) {
+                        match document.save_now() {
+                            Ok(()) => {
+                                self.status_message = "saved".to_string();
+                                self.tabs.set_dirty(&path, false);
+                            }
+                            Err(error) => {
+                                self.status_message = format!("save failed: {error}");
+                            }
                         }
                     }
-                    if let Some(active) = self.tabs.active_tab() {
-                        let path = active.path.clone();
-                        self.tabs.set_dirty(&path, false);
-                    }
                 }
-                true
-            }
-            "quit" => {
-                // Handled by the caller through the viewport command;
-                // record the intent here.
-                self.status_message = "quitting".to_string();
                 true
             }
             "open_folder" => {
@@ -391,11 +422,14 @@ impl MicaApp {
             return;
         }
         if pressed(egui::Key::Backspace) {
-            let at_start = self
+            // Merge only when the TextEdit did not already use this
+            // Backspace to delete a character (see
+            // `OpenDocument::backspace_should_merge`).
+            let merge = self
                 .active_document_mut()
-                .map(|document| document.editing_column == 0)
+                .map(|document| document.backspace_should_merge())
                 .unwrap_or(false);
-            if at_start {
+            if merge {
                 if let Some(document) = self.active_document_mut() {
                     document.merge_editing_line_upwards();
                 }
@@ -417,50 +451,44 @@ impl MicaApp {
         }
     }
 
-    /// Auto-save tick: save the active document when its debounce has
-    /// elapsed, and keep repainting while anything is dirty.
+    /// Auto-save tick: save every open document (active or in a
+    /// background tab) whose debounce has elapsed, and keep repainting
+    /// while anything is dirty.
     fn auto_save_tick(&mut self, ctx: &egui::Context) {
+        if self.save_due_documents() {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+    }
+
+    /// The display-free part of [`Self::auto_save_tick`]. Returns
+    /// `true` while any document still has unsaved edits.
+    fn save_due_documents(&mut self) -> bool {
         let mut any_dirty = false;
-        let active_path = self.tabs.active_tab().map(|tab| tab.path.clone());
-        if let Some(path) = active_path {
-            let due = self
-                .documents
-                .get(&path)
-                .map(|document| document.auto_saver.save_is_due())
-                .unwrap_or(false);
-            if due {
-                if let Some(document) = self.documents.get_mut(&path) {
-                    match document.save_now() {
-                        Ok(()) => {
-                            self.saved_since = Some(Instant::now());
-                            self.status_message = format!("saved {}", path.display());
-                        }
-                        Err(error) => {
-                            self.status_message =
-                                format!("auto-save failed for {}: {error}", path.display());
-                        }
+        for (path, document) in &mut self.documents {
+            if document.auto_saver.save_is_due() {
+                match document.save_now() {
+                    Ok(()) => {
+                        self.saved_since = Some(Instant::now());
+                        self.status_message = format!("saved {}", path.display());
+                        self.tabs.set_dirty(path, false);
+                    }
+                    Err(error) => {
+                        self.status_message =
+                            format!("auto-save failed for {}: {error}", path.display());
                     }
                 }
-                self.tabs.set_dirty(&path, false);
             }
-            if let Some(document) = self.documents.get(&path) {
-                any_dirty = document.save_state() == SaveState::Dirty
-                    || document.save_state() == SaveState::Saving;
-            }
+            any_dirty |= matches!(document.save_state(), SaveState::Dirty | SaveState::Saving);
         }
         if let Some(saved_since) = self.saved_since {
             if saved_since.elapsed() > Duration::from_millis(1500) {
-                if let Some(path) = self.tabs.active_tab().map(|tab| tab.path.clone()) {
-                    if let Some(document) = self.documents.get_mut(&path) {
-                        document.auto_saver.acknowledge_saved();
-                    }
+                for document in self.documents.values_mut() {
+                    document.auto_saver.acknowledge_saved();
                 }
                 self.saved_since = None;
             }
         }
-        if any_dirty {
-            ctx.request_repaint_after(Duration::from_millis(200));
-        }
+        any_dirty
     }
 
     /// Mark the active tab dirty when its document became dirty.
@@ -480,6 +508,16 @@ impl MicaApp {
 }
 
 impl eframe::App for MicaApp {
+    /// Quitting (closing the window) flushes every document with
+    /// unsaved edits, so the debounce window never loses work. eframe
+    /// cannot cancel the exit from here, so a failed save can only be
+    /// reported on stderr.
+    fn on_exit(&mut self) {
+        for error in self.flush_all() {
+            eprintln!("mica-egui: save on quit failed: {error}");
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         // Auto-quit for headless xvfb verification (`--quit-after`).
         // eframe only calls `ui()` when a repaint is requested, so
@@ -491,6 +529,10 @@ impl eframe::App for MicaApp {
         if let Some(quit_after) = self.quit_after {
             ui.ctx().request_repaint();
             if self.started.elapsed() > quit_after {
+                // `process::exit` skips `on_exit`, so flush here too.
+                for error in self.flush_all() {
+                    eprintln!("mica-egui: save on quit failed: {error}");
+                }
                 std::process::exit(0);
             }
         }
@@ -674,7 +716,7 @@ impl eframe::App for MicaApp {
                 }
                 None => {
                     ui.centered_and_justified(|ui| {
-                        ui.label("Open a Markdown file from the file tree (Enter or click).");
+                        ui.label("Open a Markdown file from the file tree (`l` or click).");
                     });
                 }
             }
@@ -872,6 +914,99 @@ fn describe_key(key: egui::Key) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mica_shared_core::auto_save::AutoSaver;
+
+    /// A fresh folder with `a.md` and `b.md`; the app opens `a.md`
+    /// first (as `new` does), then `b.md`, so `a.md` is a background
+    /// tab and `b.md` is active.
+    fn app_with_two_tabs(name: &str) -> (MicaApp, PathBuf, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("mica-egui-app-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.md");
+        let b = dir.join("b.md");
+        std::fs::write(&a, "alpha\n").unwrap();
+        std::fs::write(&b, "beta\n").unwrap();
+        let mut app = MicaApp::new(dir.clone(), None);
+        app.open_file(&b);
+        assert_eq!(app.tabs.active_tab().unwrap().path, b);
+        (app, dir, a, b)
+    }
+
+    /// Edit the first line of a (background) document, the way the
+    /// cursor-line `TextEdit` does, inside the debounce window.
+    fn edit_first_line(app: &mut MicaApp, path: &Path, text: &str) {
+        let document = app.documents.get_mut(path).unwrap();
+        document.line_edit_text = text.to_string();
+        document.apply_line_input(Some(text.chars().count()));
+        assert_eq!(document.save_state(), SaveState::Dirty);
+        assert!(!document.auto_saver.save_is_due(), "still inside debounce");
+    }
+
+    fn tab_index(app: &MicaApp, path: &Path) -> Option<usize> {
+        app.tabs.tabs().iter().position(|tab| tab.path == path)
+    }
+
+    #[test]
+    fn closing_a_background_tab_saves_its_unsaved_edit() {
+        let (mut app, dir, a, _) = app_with_two_tabs("close-saves");
+        edit_first_line(&mut app, &a, "alpha edited");
+        let index = tab_index(&app, &a).unwrap();
+        assert!(app.close_tab(index));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "alpha edited\n");
+        assert!(tab_index(&app, &a).is_none());
+        assert!(!app.documents.contains_key(&a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closing_a_tab_whose_save_fails_keeps_it_open() {
+        let (mut app, dir, a, _) = app_with_two_tabs("close-fails");
+        edit_first_line(&mut app, &a, "alpha edited");
+        // Make the save fail: the folder is gone, so the temp file
+        // cannot be created.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let index = tab_index(&app, &a).unwrap();
+        assert!(!app.close_tab(index));
+        assert!(tab_index(&app, &a).is_some(), "tab must stay open");
+        assert_eq!(
+            app.documents[&a].buffer.line(0),
+            Some("alpha edited"),
+            "edits stay in memory"
+        );
+        assert!(app.documents[&a].has_unsaved_changes());
+        assert!(
+            app.status_message.contains("save failed"),
+            "{}",
+            app.status_message
+        );
+    }
+
+    #[test]
+    fn auto_save_tick_saves_background_documents() {
+        let (mut app, dir, a, b) = app_with_two_tabs("tick-background");
+        app.documents.get_mut(&a).unwrap().auto_saver =
+            AutoSaver::with_delay(Duration::from_millis(1));
+        edit_first_line(&mut app, &a, "alpha edited");
+        app.tabs.set_dirty(&a, true);
+        std::thread::sleep(Duration::from_millis(10));
+        assert_eq!(app.tabs.active_tab().unwrap().path, b, "a.md is background");
+        assert!(!app.save_due_documents(), "nothing left dirty");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "alpha edited\n");
+        assert!(!app.tabs.tabs()[tab_index(&app, &a).unwrap()].dirty);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flush_all_saves_every_dirty_document() {
+        let (mut app, dir, a, b) = app_with_two_tabs("flush-all");
+        edit_first_line(&mut app, &a, "alpha edited");
+        edit_first_line(&mut app, &b, "beta edited");
+        assert!(app.flush_all().is_empty());
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "alpha edited\n");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "beta edited\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn keymap_names_cover_default_bindings() {

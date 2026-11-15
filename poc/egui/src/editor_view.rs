@@ -98,10 +98,11 @@ pub fn styled_line_job(
                 },
             );
         } else {
-            // `shared-core` returns no spans for fenced code-block
-            // interior lines (it only records their `content_range`),
-            // so the decoration above is empty. Fall back to the raw
-            // line in monospace rather than showing a blank row.
+            // Code-block interior lines get their monospace segment
+            // from `shared-core` now; this branch only fires for lines
+            // whose whole content is a hidden marker (for example a
+            // bare `# ` or `- `). Show the raw line in monospace rather
+            // than a blank row (unchanged PoC behaviour).
             job.append(
                 line,
                 0.0,
@@ -152,11 +153,13 @@ pub fn render_document(ui: &mut Ui, document: &mut OpenDocument) -> Option<usize
                 document.needs_focus = false;
             }
             // Keep the char-column cursor position for Enter/Backspace
-            // handling in the app (split/merge at the cursor).
-            if let Some(cursor_range) = response.cursor_range {
-                document.editing_column = cursor_range.primary.index.into();
-            }
-            document.sync_line_edit_to_buffer();
+            // handling in the app (split/merge at the cursor) and for
+            // the status bar, then sync the edit into the buffer.
+            document.apply_line_input(
+                response
+                    .cursor_range
+                    .map(|cursor_range| cursor_range.primary.index.into()),
+            );
         } else {
             let (job, next_in_code_block) = styled_line_job(
                 ui,
@@ -194,29 +197,30 @@ fn heading_size_factor(line: &str) -> f32 {
     }
 }
 
-/// Heading size factor used by the styled view (mirrors shared-core).
-/// Test-only helper: the production path reads the factor from the
-/// `shared-core` decoration itself.
-#[cfg(test)]
-pub fn heading_factor_for_level(level: usize) -> f32 {
-    match level {
-        1 => 1.6,
-        2 => 1.4,
-        3 => 1.25,
-        4 => 1.15,
-        _ => 1.1,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn heading_factor_matches_shared_core() {
-        assert_eq!(heading_factor_for_level(1), 1.6);
-        assert_eq!(heading_factor_for_level(2), 1.4);
-        assert_eq!(heading_factor_for_level(3), 1.25);
+        // The raw cursor-line TextEdit keeps the heading size that the
+        // styled (shared-core) view uses for the same line.
+        for line in [
+            "# One",
+            "## Two",
+            "### Three",
+            "#### Four",
+            "##### Five",
+            "###### Six",
+            "plain",
+        ] {
+            let (display, _) = decorate_line(line, 0, None, false);
+            assert_eq!(
+                heading_size_factor(line),
+                display.line_height_factor,
+                "size factor mismatch for {line:?}"
+            );
+        }
     }
 
     #[test]
@@ -228,16 +232,19 @@ mod tests {
     }
 
     #[test]
-    fn shared_core_code_block_interior_has_no_spans() {
+    fn shared_core_code_block_interior_is_one_monospace_segment() {
         // Regression test for the blank-code-lines bug seen in the
-        // xvfb screenshot of welcome.md: `shared-core` returns no
-        // spans for lines inside a fenced code block, so the egui
-        // view must fall back to the raw line in monospace (see
-        // `styled_line_job`) instead of rendering a blank row.
-        let (display, still_in_block) =
-            decorate_line("    println!(\"hello\");", 11, Some(0), true);
+        // xvfb screenshot of welcome.md: `shared-core` now emits one
+        // monospace segment for a code-block interior line, so
+        // `styled_line_job` renders the raw line in monospace from the
+        // decoration itself (no egui-side fallback needed).
+        let line = "    println!(\"hello\");";
+        let (display, still_in_block) = decorate_line(line, 11, Some(0), true);
         assert!(still_in_block);
-        assert!(display.segments.is_empty());
-        assert_eq!(display.display_text, "");
+        assert_eq!(display.segments.len(), 1);
+        assert_eq!(display.display_text, line);
+        let style = display.segments[0].style;
+        assert!(style.monospace && !style.dimmed && !style.bold && !style.italic);
+        assert_eq!(style.size_factor, 1.0);
     }
 }

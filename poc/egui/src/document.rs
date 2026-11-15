@@ -30,6 +30,11 @@ pub struct OpenDocument {
     /// `true` after the editing line changed and the `TextEdit` needs
     /// keyboard focus (requested once, then cleared).
     pub needs_focus: bool,
+    /// `true` when this frame's `TextEdit` input changed the editing
+    /// line (see [`OpenDocument::apply_line_input`]). A Backspace that
+    /// already deleted a character inside the line must not also merge
+    /// the line upwards.
+    pub line_changed_this_frame: bool,
 }
 
 impl OpenDocument {
@@ -57,12 +62,42 @@ impl OpenDocument {
             editing_column: 0,
             line_edit_text: first_line,
             needs_focus: false,
+            line_changed_this_frame: false,
         }
     }
 
     /// Current save state for the status bar.
     pub fn save_state(&self) -> SaveState {
         self.auto_saver.state()
+    }
+
+    /// `true` when the document has edits that are not on disk yet
+    /// (including a save that started but failed).
+    pub fn has_unsaved_changes(&self) -> bool {
+        matches!(self.save_state(), SaveState::Dirty | SaveState::Saving)
+            || self.buffer.line(self.editing_line).unwrap_or("") != self.line_edit_text
+    }
+
+    /// Apply one frame of cursor-line `TextEdit` input: record the
+    /// cursor column the widget reports (in `char`s) and sync the
+    /// edited text into the buffer. Remembers whether the text changed
+    /// so the app can tell "Backspace deleted a character" apart from
+    /// "Backspace at column 0 of an unchanged line" (only the latter
+    /// merges the line upwards; see [`Self::backspace_should_merge`]).
+    pub fn apply_line_input(&mut self, cursor_column: Option<usize>) {
+        if let Some(column) = cursor_column {
+            self.editing_column = column;
+        }
+        self.line_changed_this_frame = self.sync_line_edit_to_buffer();
+    }
+
+    /// `true` when a Backspace pressed this frame should merge the
+    /// editing line into the line above: the cursor is at column 0
+    /// and the `TextEdit` did not already consume the Backspace by
+    /// deleting a character (which would leave the cursor at 0 too,
+    /// for example when a one-character line was just emptied).
+    pub fn backspace_should_merge(&self) -> bool {
+        self.editing_column == 0 && !self.line_changed_this_frame
     }
 
     /// Move the editing cursor to another line, syncing the
@@ -81,6 +116,8 @@ impl OpenDocument {
 
     /// Push `line_edit_text` back into the buffer when it differs from
     /// the buffer's line. Returns `true` when the buffer changed.
+    /// `editing_column` is left alone: it is the `TextEdit`'s cursor,
+    /// not the end of the re-inserted line.
     pub fn sync_line_edit_to_buffer(&mut self) -> bool {
         let raw = self.buffer.line(self.editing_line).unwrap_or("");
         if raw == self.line_edit_text {
@@ -97,14 +134,15 @@ impl OpenDocument {
                 column: line_length,
             },
         );
-        let after = self.buffer.insert(
+        self.buffer.insert(
             CursorPosition {
                 line: self.editing_line,
                 column: 0,
             },
             &self.line_edit_text.clone(),
         );
-        self.editing_column = after.column;
+        let line_length = self.line_edit_text.chars().count();
+        self.editing_column = self.editing_column.min(line_length);
         self.auto_saver.note_edit();
         true
     }
@@ -151,9 +189,13 @@ impl OpenDocument {
         }
         self.sync_line_edit_to_buffer();
         let line = self.editing_line;
-        let above = self.buffer.line(line - 1).unwrap_or("").to_string();
-        let current = self.buffer.line(line).unwrap_or("").to_string();
-        let above_length = above.chars().count();
+        let above_length = self
+            .buffer
+            .line(line - 1)
+            .map(|text| text.chars().count())
+            .unwrap_or(0);
+        // Deleting the newline joins the lines; the buffer now holds
+        // `above + current` on line `line - 1`.
         self.buffer.delete_range(
             CursorPosition {
                 line: line - 1,
@@ -161,9 +203,6 @@ impl OpenDocument {
             },
             CursorPosition { line, column: 0 },
         );
-        // Deleting the newline joins the lines; the buffer now holds
-        // `above + current` on line `line - 1`.
-        let _ = current;
         self.auto_saver.note_edit();
         self.editing_line = line - 1;
         self.editing_column = above_length;
@@ -173,7 +212,9 @@ impl OpenDocument {
     }
 
     /// Save the buffer to disk atomically right now (used by auto-save
-    /// and by Ctrl+S). Returns `Ok(())` on success.
+    /// and by Ctrl+S). Returns `Ok(())` on success. On failure the
+    /// document stays dirty (the debounce restarts, so auto-save
+    /// retries later) and the edits stay in memory.
     pub fn save_now(&mut self) -> std::io::Result<()> {
         self.sync_line_edit_to_buffer();
         self.auto_saver.begin_save();
@@ -184,7 +225,10 @@ impl OpenDocument {
                 self.auto_saver.finish_save();
                 Ok(())
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                self.auto_saver.note_edit();
+                Err(error)
+            }
         }
     }
 }
@@ -222,6 +266,45 @@ mod tests {
         assert!(document.sync_line_edit_to_buffer());
         assert_eq!(document.save_state(), SaveState::Dirty);
         assert_eq!(document.buffer.to_text(), "one two\n");
+    }
+
+    #[test]
+    fn backspace_emptying_a_line_keeps_the_empty_line() {
+        // Regression: Backspace on a one-character line used to delete
+        // the character AND merge the (now empty) line upwards, because
+        // the column was forced to the line end (0) after every sync.
+        let mut document = OpenDocument::from_text(Path::new("note.md"), "above\na\nbelow");
+        document.move_editing_line(1);
+        document.apply_line_input(Some(1));
+        assert!(!document.line_changed_this_frame);
+        // The TextEdit handles Backspace: "a" -> "", cursor at 0.
+        document.line_edit_text.clear();
+        document.apply_line_input(Some(0));
+        assert!(
+            !document.backspace_should_merge(),
+            "the Backspace was consumed by deleting 'a'"
+        );
+        assert_eq!(document.buffer.to_text(), "above\n\nbelow\n");
+        assert_eq!(document.editing_line, 1);
+        // A second Backspace on the now-empty, unchanged line merges.
+        document.apply_line_input(Some(0));
+        assert!(document.backspace_should_merge());
+        assert!(document.merge_editing_line_upwards());
+        assert_eq!(document.buffer.to_text(), "above\nbelow\n");
+    }
+
+    #[test]
+    fn typing_keeps_the_textedit_cursor_column() {
+        // Regression: the status bar column jumped to the line end
+        // after typing in the middle of a line.
+        let mut document = OpenDocument::from_text(Path::new("note.md"), "hello world");
+        document.line_edit_text = "hello, world".to_string();
+        document.apply_line_input(Some(6));
+        assert_eq!(document.editing_column, 6);
+        assert_eq!(document.buffer.to_text(), "hello, world\n");
+        // Enter after that splits at the real cursor, not the line end.
+        assert!(document.split_editing_line_at_cursor());
+        assert_eq!(document.buffer.to_text(), "hello,\n world\n");
     }
 
     #[test]

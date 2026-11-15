@@ -42,7 +42,9 @@ settings live only in `~/.config/mica/keymap.toml` (see below).
 
 - **File tree** (left panel): `shared-core` `scan_folder`, folders
   collapsible, Markdown files listed. Keyboard: `j`/`k` move,
-  `l`/`Enter` opens, `h` collapses, `Ctrl+B` hides the tree.
+  `l` opens the selected file (or toggles a folder), `h` collapses,
+  `Ctrl+B` hides the tree. `Enter` is not bound in the tree: it only
+  splits the line in the editor and runs the selection in the palette.
   A "Rescan folder" button re-reads the folder.
 - **Tabs** (top bar): one file = one tab (`shared-core` `tabs`);
   reopening focuses the existing tab; `●` marks a dirty tab;
@@ -54,6 +56,10 @@ settings live only in `~/.config/mica/keymap.toml` (see below).
   `Saving…` / `✓ Saved`), file path, cursor `line/col`, last action.
 - **Auto-save**: `shared-core` `auto_save`, 1000 ms debounce,
   atomic write (temp file + rename), visible in the status bar.
+  Every open document is saved when its debounce elapses, not only
+  the active tab. Closing a tab saves unsaved edits first (if that
+  save fails, the tab stays open and the status bar shows the
+  error), and closing the window saves every dirty document.
 - **Command palette** (`Ctrl+Shift+P`) and **Quick Open** (`Ctrl+P`):
   `shared-core` `command_palette` fuzzy matching over commands and
   file names; `↑`/`↓` + `Enter` to run/open, `Esc` to close.
@@ -104,13 +110,14 @@ on plain text. Cursor-column tracking uses the `TextEdit` output's
 - **Checkboxes render as plain text**: `- [ ] First task` shows as
   `First task` (markers hidden); there is no clickable checkbox
   widget yet.
-- **Code-block interior lines** need a view-side fallback:
-  `shared-core`'s parser returns no spans for lines inside a fenced
-  code block (only `content_range`), so the decoration for those
-  lines is empty. The view falls back to the raw line in monospace
-  instead of showing a blank row (regression test
-  `shared_core_code_block_interior_has_no_spans`; found from the
-  xvfb screenshot, fixed, re-verified — see below).
+- **Code-block interior lines** originally rendered blank because
+  `shared-core`'s parser returned no spans for them (found from the
+  xvfb screenshot, see below). `shared-core` now emits one code span
+  per interior line, so the decoration itself is a monospace segment
+  (regression test
+  `shared_core_code_block_interior_is_one_monospace_segment`). The
+  view's raw-line monospace fallback remains only for lines whose
+  whole content is a hidden marker (e.g. a bare `# `).
 
 ![welcome.md in the egui PoC](screenshot-welcome.png)
 
@@ -203,8 +210,9 @@ xvfb-run -a ./target/debug/mica-egui sample-notes --quit-after 12
   the quit timer is armed and exiting the process directly when it
   fires (test-only hook). Verified: later runs exit 0 on their own.
 - **Failure 3 — code-block lines rendered blank:** see
-  "Live-preview approach" above; fixed with the monospace fallback
-  and re-verified by screenshot.
+  "Live-preview approach" above; fixed at the time with a view-side
+  monospace fallback and re-verified by screenshot (since then fixed
+  in `shared-core` itself; not re-screenshotted after that change).
 - **Failure 4 — centred text:** the first screenshot showed every
   line centre-aligned. Fixed with a centred 720 px column
   (`allocate_ui_with_layout`) holding left-aligned text; re-verified.

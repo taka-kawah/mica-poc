@@ -127,8 +127,10 @@ pub fn simulate_ime_composition(buffer: &mut TextBuffer, at: CursorPosition) -> 
 /// Steps: scan the folder, open the first `.md` file in a tab,
 /// insert Japanese text (via the IME simulation), wait out the
 /// auto-save debounce, save atomically, re-read from disk and compare.
-/// Prints one `PASS`/`FAIL` line per check and returns `Ok(())`
-/// only when every check passed.
+/// Prints one `PASS`/`FAIL` line per check and returns `Ok(checks)`
+/// with every check result, passed or not — use [`all_passed`] to
+/// decide the outcome. `Err` means the run could not continue (the
+/// first Markdown file could not be read).
 pub fn run_smoke_test(folder: &Path) -> Result<Vec<SmokeCheck>, String> {
     let mut checks: Vec<SmokeCheck> = Vec::new();
     let mut check = |name: &'static str, passed: bool, detail: String| {
@@ -286,12 +288,19 @@ pub fn run_smoke_test(folder: &Path) -> Result<Vec<SmokeCheck>, String> {
     let final_text = buffer.to_text();
     check(
         "buffer keeps original content plus edit",
-        final_text.starts_with(&original.trim_end_matches('\n'))
-            || final_text.contains("こんにちは、世界"),
+        keeps_original_plus_edit(&original, &final_text),
         format!("{} line(s) after edit", buffer.line_count()),
     );
 
     Ok(checks)
+}
+
+/// The final buffer must still start with the original content AND
+/// contain the committed IME text. Both conditions are required, so
+/// losing either the original or the edit fails the check.
+fn keeps_original_plus_edit(original: &str, final_text: &str) -> bool {
+    final_text.starts_with(original.trim_end_matches('\n'))
+        && final_text.contains("こんにちは、世界")
 }
 
 /// `true` when every check passed.
@@ -332,6 +341,19 @@ mod tests {
         );
         assert_eq!(deleted, "は");
         assert_eq!(buffer.to_text(), "こんにち\n");
+    }
+
+    #[test]
+    fn keeps_original_plus_edit_can_fail() {
+        let original = "# Title\nbody\n";
+        assert!(keeps_original_plus_edit(
+            original,
+            "# Title\nbodyこんにちは、世界\n"
+        ));
+        // Edit missing.
+        assert!(!keeps_original_plus_edit(original, "# Title\nbody\n"));
+        // Original content lost, edit present.
+        assert!(!keeps_original_plus_edit(original, "こんにちは、世界\n"));
     }
 
     #[test]
