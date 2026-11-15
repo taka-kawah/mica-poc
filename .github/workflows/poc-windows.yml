@@ -1,0 +1,76 @@
+# Mica PoC — Windows CI (best effort).
+#
+# Mica is a Windows-first app (the GUI runs on Windows, the files
+# live in WSL), so the Windows build must at least compile. Visual
+# and IME checks cannot run on a CI runner and are a manual step
+# for the user on a real Windows machine — see docs/evaluation.md.
+#
+# The shared-core tests are strict (they must pass). The GUI builds
+# are best-effort (`continue-on-error`) so one framework's Windows
+# build problem is reported as a PoC finding instead of hiding the
+# other results; their status is recorded in docs/evaluation.md.
+name: PoC (Windows)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shared-core:
+    name: Shared core (tests)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test shared core
+        run: cargo test -p mica-shared-core
+
+  egui-windows:
+    name: egui PoC (Windows build + tests)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test + build egui PoC
+        run: |
+          cargo test -p mica-egui-poc
+          cargo build -p mica-egui-poc
+
+  tauri-windows:
+    name: Tauri PoC (Windows frontend + backend build)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: poc/tauri-codemirror/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: poc/tauri-codemirror
+        run: npm ci
+      - name: Build frontend
+        working-directory: poc/tauri-codemirror
+        run: npm run build
+      - name: Test + build Rust backend
+        working-directory: poc/tauri-codemirror/src-tauri
+        run: |
+          cargo test
+          cargo build
+
+  gpui-windows:
+    name: GPUI PoC (Windows build + tests)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test + build GPUI PoC
+        run: |
+          cargo test -p mica-gpui-poc
+          cargo build -p mica-gpui-poc
