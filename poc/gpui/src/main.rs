@@ -88,14 +88,18 @@ fn run_gui(folder: &Path) {
                     let view = cx.new(|cx| MicaView::new(model, cx));
                     // Closing the window saves every dirty document
                     // first (Ctrl+Q and app quit flush in the view).
+                    // If a save fails the window stays open with the
+                    // edits kept, like Ctrl+Q; a second close goes.
                     let weak_view = view.downgrade();
                     window.on_window_should_close(cx, move |_, cx| {
-                        let _ = weak_view.update(cx, |view, _| {
-                            for error in view.model.flush_all() {
-                                eprintln!("mica-gpui: save on close failed: {error}");
-                            }
-                        });
-                        true
+                        weak_view
+                            .update(cx, |view, cx| {
+                                view.flush_before_exit(
+                                    "close the window again to close it anyway",
+                                    cx,
+                                )
+                            })
+                            .unwrap_or(true)
                     });
                     view
                 },

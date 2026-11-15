@@ -186,6 +186,7 @@ impl EditorModel {
     pub fn open_file(&mut self, path: &Path) -> io::Result<()> {
         let content = std::fs::read_to_string(path)?;
         self.tabs.open_file(path);
+        self.end_background_composition();
         self.buffers
             .entry(path.to_path_buf())
             .or_insert_with(|| TextBuffer::from_text(&content));
@@ -479,6 +480,44 @@ impl EditorModel {
         } else {
             false
         }
+    }
+
+    /// Focus the tab at `index` (tab click).
+    pub fn focus_tab(&mut self, index: usize) {
+        self.tabs.focus(index);
+        self.end_background_composition();
+    }
+
+    /// Focus the next tab (wrapping around).
+    pub fn focus_next_tab(&mut self) {
+        self.tabs.focus_next();
+        self.end_background_composition();
+    }
+
+    /// Focus the previous tab (wrapping around).
+    pub fn focus_previous_tab(&mut self) {
+        self.tabs.focus_previous();
+        self.end_background_composition();
+    }
+
+    /// After a tab switch: a composition left in a document that is no
+    /// longer active is accepted as it is (like `unmark_text`) and
+    /// recorded as an edit of THAT document, so auto-save no longer
+    /// skips it. The platform IME is not involved: `marked_range`
+    /// already reports no composition for the new active tab.
+    fn end_background_composition(&mut self) {
+        let active = self.active_path();
+        let Some((path, _)) = self
+            .ime_marked
+            .take_if(|(path, _)| Some(&*path) != active.as_ref())
+        else {
+            return;
+        };
+        self.savers
+            .entry(path.clone())
+            .or_insert_with(AutoSaver::new)
+            .note_edit();
+        self.tabs.set_dirty(&path, true);
     }
 
     /// `true` while an IME composition is in progress in `path`.
@@ -901,6 +940,57 @@ mod tests {
         assert!(model.maybe_auto_save());
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "typed 漢beta\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn switching_tabs_mid_composition_ends_it_so_auto_save_runs() {
+        let (mut model, dir, a, b) =
+            model_with_dirty_background_tab("switch-composing", Duration::from_millis(1));
+        model
+            .savers
+            .insert(b.clone(), AutoSaver::with_delay(Duration::from_millis(1)));
+        model.replace_and_mark_text_in_range(None, "か", None);
+        assert!(
+            !model.has_unsaved_changes(&b),
+            "composing is not an edit yet"
+        );
+
+        // Switch to a.md with no further input: the composition in b.md
+        // is accepted as it is and recorded as b.md's edit.
+        let index_a = model
+            .tabs
+            .tabs()
+            .iter()
+            .position(|tab| tab.path == a)
+            .unwrap();
+        model.focus_tab(index_a);
+        assert!(model.has_unsaved_changes(&b));
+        assert!(model
+            .tabs
+            .tabs()
+            .iter()
+            .any(|tab| tab.path == b && tab.dirty));
+        model.focus_next_tab();
+        assert_eq!(model.active_path().as_deref(), Some(b.as_path()));
+        assert_eq!(model.marked_range(), None, "no stale composition on return");
+
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(model.maybe_auto_save());
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "かbeta\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quit_flush_reports_a_failed_save() {
+        // The window-close and Ctrl+Q guards stay open when this list
+        // is non-empty.
+        let (mut model, dir, a, _) =
+            model_with_dirty_background_tab("flush-fails", Duration::from_secs(60));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let errors = model.flush_all();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("a.md"));
+        assert!(model.has_unsaved_changes(&a), "edits kept, still dirty");
     }
 
     #[test]

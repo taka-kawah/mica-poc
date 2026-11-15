@@ -95,6 +95,27 @@ fn input_target(palette_open: bool, focus_area: FocusArea) -> InputTarget {
     }
 }
 
+/// Backspace (`forward == false`) or Delete (`forward == true`) with
+/// the palette closed. Like text input (see [`input_target`]), it only
+/// edits the document while the editor has keyboard focus; with the
+/// file tree focused it does nothing. Returns `true` when the document
+/// was edited.
+fn delete_key_edits_document(
+    model: &mut EditorModel,
+    focus_area: FocusArea,
+    forward: bool,
+) -> bool {
+    if focus_area != FocusArea::Editor {
+        return false;
+    }
+    if forward {
+        model.delete_after_cursor();
+    } else {
+        model.delete_before_cursor();
+    }
+    true
+}
+
 /// One shaped editor line, kept for click-to-cursor and for the IME
 /// input handler (`bounds_for_range`, `character_index_for_point`).
 #[derive(Clone)]
@@ -303,11 +324,11 @@ impl MicaView {
             }
             "tab_close" => self.close_active_tab(cx),
             "tab_recent_next" | "tab_next" => {
-                self.model.tabs.focus_next();
+                self.model.focus_next_tab();
                 cx.notify();
             }
             "tab_previous" => {
-                self.model.tabs.focus_previous();
+                self.model.focus_previous_tab();
                 cx.notify();
             }
             "save" => {
@@ -356,12 +377,12 @@ impl MicaView {
     }
 
     fn on_tab_next(&mut self, _: &TabNext, _: &mut Window, cx: &mut Context<Self>) {
-        self.model.tabs.focus_next();
+        self.model.focus_next_tab();
         cx.notify();
     }
 
     fn on_tab_previous(&mut self, _: &TabPrevious, _: &mut Window, cx: &mut Context<Self>) {
-        self.model.tabs.focus_previous();
+        self.model.focus_previous_tab();
         cx.notify();
     }
 
@@ -445,16 +466,18 @@ impl MicaView {
             cx.notify();
             return;
         }
-        self.model.delete_before_cursor();
-        self.note_edit_and_schedule_auto_save(cx);
+        if delete_key_edits_document(&mut self.model, self.focus_area, false) {
+            self.note_edit_and_schedule_auto_save(cx);
+        }
     }
 
     fn on_delete(&mut self, _: &Delete, _: &mut Window, cx: &mut Context<Self>) {
         if self.palette_open {
             return;
         }
-        self.model.delete_after_cursor();
-        self.note_edit_and_schedule_auto_save(cx);
+        if delete_key_edits_document(&mut self.model, self.focus_area, true) {
+            self.note_edit_and_schedule_auto_save(cx);
+        }
     }
 
     fn on_confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
@@ -486,17 +509,28 @@ impl MicaView {
     /// Ctrl+Q: save every dirty document, then quit. If a save fails,
     /// stay open and say so; a second Ctrl+Q quits anyway.
     fn on_quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
+        if self.flush_before_exit("press Ctrl+Q again to quit anyway", cx) {
+            cx.quit();
+        }
+    }
+
+    /// Save every dirty document before quitting or closing the
+    /// window. Returns `true` when it is safe to go: everything is on
+    /// disk, or this is the second attempt after a failed save. On a
+    /// first failure it returns `false` (stay open, edits kept) and the
+    /// status bar says why, followed by the `override_hint`.
+    pub fn flush_before_exit(&mut self, override_hint: &str, cx: &mut Context<Self>) -> bool {
         let errors = self.model.flush_all();
         if errors.is_empty() || self.quit_despite_failed_save {
-            cx.quit();
-            return;
+            return true;
         }
         self.quit_despite_failed_save = true;
         self.status_message = Some(format!(
-            "not quitting: save failed for {} — press Ctrl+Q again to quit anyway",
+            "not quitting: save failed for {} — {override_hint}",
             errors.join("; ")
         ));
         cx.notify();
+        false
     }
 
     fn on_tree_click(
@@ -523,7 +557,7 @@ impl MicaView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.model.tabs.focus(index);
+        self.model.focus_tab(index);
         cx.notify();
     }
 
@@ -1301,7 +1335,7 @@ impl MicaView {
 /// does not read the keymap file: [`key_bindings_from_keymap_file`]
 /// adds the `[global]` table's bindings on top of these.
 pub fn build_key_bindings() -> Vec<KeyBinding> {
-    let bindings = vec![
+    vec![
         KeyBinding::new("backspace", Backspace, None),
         KeyBinding::new("delete", Delete, None),
         KeyBinding::new("left", MoveLeft, None),
@@ -1315,8 +1349,7 @@ pub fn build_key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-s", SaveNow, None),
         KeyBinding::new("f6", FocusCycle, None),
         KeyBinding::new("ctrl-q", Quit, None),
-    ];
-    bindings
+    ]
 }
 
 /// Map a keymap command name to the action it triggers, for the
@@ -1390,5 +1423,47 @@ mod tests {
             InputTarget::Palette
         );
         assert_eq!(input_target(true, FocusArea::Editor), InputTarget::Palette);
+    }
+
+    #[test]
+    fn backspace_and_delete_never_edit_the_document_while_the_tree_is_focused() {
+        let dir =
+            std::env::temp_dir().join(format!("mica-gpui-tree-delete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("note.md");
+        std::fs::write(&note, "abc\n").unwrap();
+        let mut model = EditorModel::open_folder(&dir);
+        model.open_file(&note).unwrap();
+        model.set_cursor(CursorPosition { line: 0, column: 1 });
+
+        // Tree focused: Backspace and Delete are no-ops.
+        assert!(!delete_key_edits_document(
+            &mut model,
+            FocusArea::FileTree,
+            false
+        ));
+        assert!(!delete_key_edits_document(
+            &mut model,
+            FocusArea::FileTree,
+            true
+        ));
+        assert_eq!(document_text(model.active_buffer().unwrap()), "abc");
+        assert!(!model.has_unsaved_changes(&note));
+
+        // Editor focused: they edit as usual.
+        assert!(delete_key_edits_document(
+            &mut model,
+            FocusArea::Editor,
+            false
+        ));
+        assert_eq!(document_text(model.active_buffer().unwrap()), "bc");
+        assert!(delete_key_edits_document(
+            &mut model,
+            FocusArea::Editor,
+            true
+        ));
+        assert_eq!(document_text(model.active_buffer().unwrap()), "c");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
