@@ -29,11 +29,10 @@ fn open_folder_edit_preview_save_and_reload() {
     let welcome_path = sample_folder.join("welcome.md");
     let mut tabs = TabManager::new();
     let first = tabs.open_file(&welcome_path);
-    let second = tabs.open_file(&sample_folder.join("second-note.md"));
+    tabs.open_file(&sample_folder.join("second-note.md"));
     assert_eq!(tabs.open_file(&welcome_path), first);
     assert_eq!(tabs.tabs().len(), 2);
     assert_eq!(tabs.active_tab().unwrap().title, "welcome.md");
-    let _ = second;
 
     // 3. Edit the buffer, including Japanese text.
     let original = fs::read_to_string(&welcome_path).unwrap();

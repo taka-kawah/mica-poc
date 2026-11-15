@@ -146,11 +146,10 @@ mod tests {
     fn reopening_focuses_existing_tab() {
         let mut manager = TabManager::new();
         let first = manager.open_file(Path::new("/notes/a.md"));
-        let second = manager.open_file(Path::new("/notes/b.md"));
+        manager.open_file(Path::new("/notes/b.md"));
         assert_eq!(manager.open_file(Path::new("/notes/a.md")), first);
         assert_eq!(manager.tabs().len(), 2);
         assert_eq!(manager.active_tab().unwrap().title, "a.md");
-        let _ = second;
     }
 
     #[test]
