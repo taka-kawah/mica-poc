@@ -5,9 +5,12 @@ Obsidian's pleasant writing experience, but WSL-first,
 keyboard-centric, and with no vault.
 
 > **Status:** All three PoCs (Tauri + CodeMirror 6, GPUI, egui) plus the
-> shared core are in this repo. The CI workflows are pending: they exist
-> locally and will land once an upload route for `.github/workflows/` is
-> available. The evaluation is in
+> shared core are in this repo. CI runs on Linux + Windows for all PoCs
+> and is green (run #12, 2026-11-15; see
+> [Actions](https://github.com/taka-kawah/mica-poc/actions)).
+> Binaries for Linux / Windows / macOS are published as
+> [GitHub Releases](https://github.com/taka-kawah/mica-poc/releases)
+> (pre-release, v0.1.0). The evaluation is in
 > [`docs/evaluation.md`](docs/evaluation.md).
 
 Spec: Notion 「Mica 仕様メモ（自作マークダウンエディタ）」 —
@@ -38,7 +41,7 @@ step in the GitHub web UI; see
 | `poc/egui/` | egui + eframe PoC. |
 | `sample-notes/` | Shared sample Markdown folder used by every PoC's tests. |
 | `docs/` | Plan, spec summary, framework research, evaluation. |
-| `.github/workflows/` | Linux + Windows CI for all PoCs (pending — not yet uploaded, see the status line above). |
+| `.github/workflows/` | Linux + Windows CI for all PoCs, plus the release workflow that builds PoC binaries for Linux / Windows / macOS. |
 
 ## The three PoCs
 
