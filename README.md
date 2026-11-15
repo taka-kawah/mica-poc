@@ -100,8 +100,8 @@ ranking disagrees, and the PoC measurements will decide.
 
 ## Licenses
 
-- Mica PoC code is intended to be dual-licensed MIT OR Apache-2.0;
-  the full LICENSE files ship with the first code PR.
+- Mica PoC code is dual-licensed MIT OR Apache-2.0; the full license
+  texts are in the repo root as `LICENSE-MIT` and `LICENSE-APACHE-2.0`.
 - Tauri: MIT OR Apache-2.0. CodeMirror 6: MIT. egui/eframe: MIT OR Apache-2.0.
 - GPUI: Apache-2.0.
 - **No GPL code is used anywhere in this repo.** Zed's editor crates
