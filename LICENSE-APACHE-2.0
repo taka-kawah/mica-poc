@@ -1,3 +1,4 @@
+
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -18,7 +19,7 @@
       "control" means (i) the power, direct or indirect, to cause the
       direction or management of such entity, whether by contract or
       otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or beneficial ownership of such entity.
+      outstanding shares, or (iii) beneficial ownership of such entity.
 
       "You" (or "Your") shall mean an individual or Legal Entity
       exercising permissions granted by this License.
@@ -28,8 +29,8 @@
       source, and configuration files.
 
       "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but not
-      limited to compiled object code, generated documentation,
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
       and conversions to other media types.
 
       "Work" shall mean the work of authorship, whether in Source or
@@ -154,16 +155,13 @@
       whether in tort (including negligence), contract, or otherwise,
       unless required by applicable law (such as deliberate and grossly
       negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, incidental,
-      special, exemplary, or consequential damages (including, but not
-      limited to, procurement of substitute goods or services; loss of use,
-      data, or profits; or business interruption) however caused and on any
-      theory of liability, whether in contract, strict liability, or tort
-      (including negligence or otherwise) arising in any way out of the use
-      or inability to use the Work (including but not limited to loss of
-      goodwill, work stoppage, computer failure or malfunction, or any and
-      all other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damage.
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
 
    9. Accepting Warranty or Additional Liability. While redistributing
       the Work or Derivative Works thereof, You may choose to offer,
