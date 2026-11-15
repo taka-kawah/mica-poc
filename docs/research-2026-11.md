@@ -1,7 +1,7 @@
 # Mica — GUI Framework Research (as of 15 November 2026)
 
 **Project:** Mica — a custom Markdown editor (Obsidian-like live preview, WSL-first, keyboard-centric, no vault).
-**Date of research:** 2026-11-15. All version/license claims below are grounded in sources checked on that date; anything that could not be verified is marked **unverified as of 2026-11-15**.
+**Date of research:** 2026-11-15. All version/license claims below are grounded in sources checked on that date, though some version and licence facts rest on secondary sources (third-party blogs, aggregators and downstream inventories, listed per section and in §12) rather than the projects' own pages; anything that could not be verified is marked **unverified as of 2026-11-15**.
 **Scope:** three candidate stacks — (1) Tauri 2 + CodeMirror 6, (2) GPUI, (3) egui / eframe — plus a one-paragraph note on alternatives. No code was written and no GitHub repository was touched for this report.
 
 ---
@@ -25,11 +25,11 @@
 | Item | Finding |
 |---|---|
 | Latest stable | **Tauri `2.12.5`, released 21 October 2026** (crates.io / GitHub releases). The 2.12 minor itself shipped 26 September 2026. |
-| Previous minors | 2.12.0 (26 Sep 2026), 2.12.3 (10 Oct 2026); 2.10.3 (4 Mar 2026), 2.11.5 (1 Jul 2026). |
+| Recent releases | 2.12.3 (10 Oct 2026), 2.12.0 (26 Sep 2026), 2.11.5 (1 Jul 2026), 2.10.3 (4 Mar 2026). |
 | Next major | **Tauri 3 is in alpha**: `3.0.0-alpha.6` released 6 Nov 2026. Do not build Mica on it. |
-| 2.0 stable | 2 October 2024 — so the 2.x line has had ~2 years of production use and 70 stable releases since Feb 2024. |
+| 2.0 stable | 2 October 2024 — so the 2.x line has had ~2 years of production use. |
 | Where to get it | crates.io (`tauri`, `tauri-build`, `@tauri-apps/cli` on npm), `create-tauri-app`. Source: `github.com/tauri-apps/tauri`. |
-| MSRV | **Rust 1.90**, raised in 2.12 (policy: stable − 3, updated only in minor/major releases). This was possible because 2.12 dropped official Windows 7 support — the latest WebView2 installer no longer runs on Windows 7 at all. |
+| MSRV | **Rust 1.90**, raised in 2.12 (PR #13221). Per the 2.12 announcement, 1.90 is the initial value of a new policy; going forward the MSRV follows stable − 3, updated only in minor/major releases. This was possible because 2.12 dropped official Windows 7 support — the latest WebView2 installer no longer runs on Windows 7 at all. |
 
 Sources: Tauri release list, https://tauri.app/release/core/ ; "Announcing Tauri 2.12", https://v2.tauri.app/blog/tauri-2.12/ (26 Sep 2026); Tauri 2.12.5 release notes via https://dev-news.anonyfox.com/tauri/ (checked 15 Nov 2026).
 
@@ -150,7 +150,7 @@ Sources: https://deepwiki.com/fryholic/sticker-md/3.3.1-live-preview ; https://g
 
 **Built-in:** essentially nothing above the primitive layer. GPUI ships low-level elements, `uniform_list` virtualization, focus/keybinding/action systems, and a 746-line `input.rs` example showing what a text input takes. There is **no first-party text-input widget, no rich-text widget, no markdown support, no syntax highlighting, and no multi-line editor**.
 
-**What Mica would build:** everything — a rope/text buffer, shaping per paragraph into positioned glyph runs (via CoreText/DirectWrite/cosmic-text), a shaped-line cache invalidated per edited paragraph, exact-height virtualization (estimated heights cause scrollbar jumps), selection/caret geometry (including BiDi, which is known-broken: see §6), undo/redo, clipboard, and the whole Live Preview decoration concept re-implemented as custom `Element`s. Zed's own editor proves it *can* be done brilliantly — but Zed's editor is a multi-year, funded-team effort, and its code is GPL (see §8). The permissive alternative, `gpui-component`, ships a code editor (tree-sitter highlighting, LSP via provider traits) under Apache-2.0 — code-oriented, not a Markdown live-preview editor; adapting it is a project in itself.
+**What Mica would build:** everything — a rope/text buffer, shaping per paragraph into positioned glyph runs (via CoreText/DirectWrite/cosmic-text), a shaped-line cache invalidated per edited paragraph, exact-height virtualization (estimated heights cause scrollbar jumps), selection/caret geometry (including BiDi, which is known-broken: see §5.2), undo/redo, clipboard, and the whole Live Preview decoration concept re-implemented as custom `Element`s. Zed's own editor proves it *can* be done brilliantly — but Zed's editor is a multi-year, funded-team effort, and its code is GPL (see §8). The permissive alternative, `gpui-component`, ships a code editor (tree-sitter highlighting, LSP via provider traits) under Apache-2.0 — code-oriented, not a Markdown live-preview editor; adapting it is a project in itself.
 
 **Honest cost, as stated by a 2026 GPUI notes app:** "we build the rich-text editor ourselves (Zed's editor is monospace-code-specific). That's the project's long pole."
 

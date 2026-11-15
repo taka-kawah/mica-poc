@@ -1,19 +1,27 @@
 # Mica PoC — Plan (2026-11-15)
 
-Coordinator: subagent session for goal_50c23ca0195f. User: 河原.
-Repo: `taka-kawah/mica-poc` (public, was empty). Spec: Notion
+Repo: `taka-kawah/mica-poc` (public; before this PR it held only the
+scaffolding commit). Spec: Notion
 「Mica 仕様メモ（自作マークダウンエディタ）」 + child 「ライブプレビューの仕組み（事前調査）」.
 Full spec extract: `docs/notion-spec-summary.md`.
-Framework research: `docs/research-2026-11.md` (pending).
+Framework research: `docs/research-2026-11.md`.
+
+**Section-number convention.** References such as "Notion spec §7"
+point to the Notion spec page's own section numbers. Sections of the
+documents in this repo are always cited with the document name, e.g.
+"research doc §10" (`docs/research-2026-11.md` §10).
 
 ## Goal of the PoC
 
 Not a full MVP. A decision-making prototype: build the same small
 end-to-end editor three ways and compare, so the GUI-technology
 decision (GPUI vs Tauri+CodeMirror 6 vs egui) can be made on evidence,
-not on paper. Notion's own next steps say exactly this:
-(1) egui prototype for Japanese IME + proportional-font multiline editing,
-(2) same in Tauri+CodeMirror 6 and compare, (3) decide, (4) MVP.
+not on paper. Notion's next steps name an egui prototype for Japanese
+IME + proportional-font multiline editing, then the same in
+Tauri+CodeMirror 6 for comparison, then the decision, then the MVP.
+This plan extends that sequence to three prototypes including GPUI,
+per the spec's current assessment that GPUI is the most promising
+candidate.
 
 ## What every PoC must do (acceptance)
 
@@ -23,12 +31,14 @@ Each PoC lives in its own directory and must, at minimum:
 2. Open a file in a tab; one file = one tab; reopening focuses the existing tab.
 3. Edit plain Markdown in a live-preview editor:
    - raw text stays raw Markdown in the buffer and on disk;
-   - non-cursor lines hide heading/bold markers and render headings larger / bold;
+   - non-cursor lines hide heading, bold, italic, link and code markers
+     and render the formatted result (e.g. headings larger, bold spans in bold);
    - the cursor line shows its markers (row-level rule for the PoC — see child page).
 4. Accept Japanese IME input without breaking (composition text must not
    corrupt the buffer or flicker decorations).
-5. Proportional font for body text, monospace only in code spans/blocks;
-   centred body with a max width (720 px target).
+5. Proportional font for body text, monospace only for code (the spec
+   says code blocks; the PoC also uses monospace for inline code spans
+   as an extension); centred body with a max width (720 px target).
 6. Auto-save after editing stops (debounced, e.g. 1000 ms) with a visible save state.
 7. Command palette (Ctrl+Shift+P) and Quick Open (Ctrl+P), at least for
    file-open / command search; full keyboard operation for tree + tabs.
@@ -37,8 +47,12 @@ Each PoC lives in its own directory and must, at minimum:
    re-read from disk and verify — runnable in CI without a display.
 10. README in its own directory: how to run, what was verified, limits.
 
-Out of scope for the PoC (per Notion §2): vault, graph/Canvas, plugins,
-sync/mobile, LSP/debugger/Git UI, split view, vim mode.
+Out of scope per the spec (Notion spec 作らないもの list): vault,
+graph view / Canvas, plugin system (for now), sync / mobile, and
+coding-oriented features (LSP, debugger, Git UI).
+
+Deferred for the PoC (the spec rates these "Later", not out of scope):
+split view, vim mode.
 
 ## Directory layout (readable names, no cryptic abbreviations)
 
@@ -91,7 +105,7 @@ Modules (one responsibility each, names in plain English):
 - `auto_save` — debounced save (temp file + rename = atomic save),
   save state (`clean` / `dirty` / `saving` / `saved`).
 - `keymap` — load one global TOML keymap (`~/.config/mica/keymap.toml`
-  format from Notion §7); commands are plain strings (`quick_open`,
+  format from Notion spec §7); commands are plain strings (`quick_open`,
   `command_palette`, `tab_close`, …).
 - `command_palette` — fuzzy-match command/file list for Ctrl+P / Ctrl+Shift+P.
 - `wsl_bridge` — stdio JSON-RPC stub: length-framed messages
@@ -159,64 +173,24 @@ on Linux CI with no display.
 - Every verification step is recorded in the PoC README and in
   `docs/evaluation.md` with commands and results, including failures.
 
-## Coding workflow (from 2026-11-15, user instruction)
+## Coding workflow
 
-Code is written **through Claude Code**; Muse verifies the result.
-Direct writing by Muse is the fallback only.
+Code is written through Claude Code, and the coordinator agent
+verifies every result before it is committed: read each changed file,
+run the build and the tests, and only then commit. If Claude Code is
+unavailable, the coordinator agent writes the code directly so work
+does not stop. Authorship (Claude Code or the coordinator agent) is
+recorded in the related GitHub Issue.
 
-- Claude Code: `claude` 2.1.325 at `~/.local/bin/claude`
-  (npm install under `~/workspace/claude-code/npm-global/bin/claude`).
-  Use `PATH="$HOME/.local/bin:$HOME/workspace/claude-code/npm-global/bin:$PATH"`.
-  Logged in with the user's Pro account (claude.ai OAuth);
-  login expires 2026-12-15. Before each use, run
-  `claude auth status` and confirm `loggedIn` is `true`. If it is
-  expired or not logged in, report to the parent agent; the re-login
-  request to the user is the parent's job, not this session's.
-- Invoke non-interactively: `claude -p`, from the repo working
-  directory, with a clear instruction, the target files, and the
-  completion criteria. Never paste secrets into the prompt.
-- Verify before committing: read every file Claude Code wrote or
-  changed, run the build and the tests, and only then commit.
-  Never commit Claude Code output unverified.
-- 5-hour limit fallback: if Claude Code hits its 5-hour usage /
-  rate limit, fall back immediately to Muse writing the code
-  directly so work does not stop. Record the time and the affected
-  work in the GitHub Issue, retry Claude Code after 5 hours, and
-  return to the Claude Code flow as soon as it works again.
-- Authorship in Issue records: every progress note states which
-  parts were written by Claude Code and which parts Muse wrote
-  directly. The naming-readability and progress-management rules
-  are unchanged.
-- Transition: work already in progress when this rule arrived
-  (the three PoC builds) finishes at its natural breakpoint under
-  the old flow; all coding after that goes through Claude Code.
-  Already-written code (shared core, docs, CI) was written
-  directly by Muse and is recorded as such.
+## PR workflow
 
-## PR workflow (from 2026-11-15, user instruction)
-
-- **Never ask the user to approve a PR.** The user does not want
-  approval work.
-- Every change goes through a pull request: push to a feature branch,
-  open a PR, review it, then merge it ourselves.
-- **Reviewers are Claude Code or a separate reviewer subagent**
-  (never the author of the change reviewing their own work).
-  Review checks: (1) build and tests pass, (2) code is readable,
-  (3) names are clear, (4) no drift from the spec
-  (`docs/notion-spec-summary.md` and this plan).
-- If the review finds problems, fix them in the same PR, re-review,
-  and only then merge.
-- Record the review content and the CI results in a PR comment
-  and/or the related Issue, stating clearly **who** reviewed it
-  (Claude Code, or the reviewer subagent's role).
-- **Report to the user only when blocked:** a design decision only
-  the user can make, or branch protection that makes user approval
-  mandatory for merging. In that case state exactly what is
-  blocking. Never leave a PR waiting silently for the user.
-- Note (2026-11-15): direct push to `main` already worked
-  (scaffolding commit `0345b214`), so no branch protection
-  currently blocks the GitHub App. PRs are still used, per the
-  user's instruction, with self-merge by the App.
+Every change goes through a pull request. Each PR is reviewed by
+Claude Code or a separate reviewer (never the change's author) for
+passing build/tests, readability, clear names, and no drift from the
+spec and this plan; problems are fixed in the same PR, then the PR is
+self-merged. The user is never asked to approve a PR; they are
+contacted only when a decision only they can make blocks progress.
+Review results and authorship are recorded in the PR or related Issue.
 
 ## GitHub progress tracking
 

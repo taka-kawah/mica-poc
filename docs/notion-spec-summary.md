@@ -4,6 +4,12 @@ Structured summary of the Mica spec, distilled from the two Notion pages.
 Written in English; Japanese terms and quotes are preserved verbatim where they matter.
 No requirements have been added beyond what the Notion pages state.
 
+**Section-number convention.** References such as "Notion spec §7" (or
+"spec §11") point to the Notion spec page's own section numbers, not to
+the numbered sections of this file. Sections of the documents in this
+repo are always cited with the document name, e.g. "research doc §10"
+(`docs/research-2026-11.md` §10); a bare "§6 below" means this file.
+
 ## Sources
 
 | Page | Title | ID | URL |
@@ -12,7 +18,7 @@ No requirements have been added beyond what the Notion pages state.
 | Child | ライブプレビューの仕組み（事前調査） | `419a547957908167b406e69abcd78011` | https://app.notion.com/p/419a547957908167b406e69abcd78011 |
 
 - **Fetched:** 2026-11-15 19:22 JST (Notion fetch timestamps: main page as of 2026-11-15T10:10:54Z, child page as of 2026-11-15T07:32:59Z).
-- **Fetch status:** Both pages fetched successfully and in full via `notion-cli notion-fetch`. No truncation or missing content was reported for either page. Nothing could not be fetched.
+- **Fetch status:** Both pages fetched successfully and in full via `notion-cli notion-fetch`. No truncation or missing content was reported for either page.
 - **Status of the spec itself:** The main page states it is 「まだたたき台の段階」 (still a rough draft).
 
 ## 1. Project goal
@@ -225,7 +231,7 @@ Comparison of Tauri + CodeMirror 6 vs egui (Rust), plus GPUI as an additional ca
 
 ### GPUI (Zed's UI framework) — additional candidate
 
-Rust GPU-rendered UI framework built by the Zed team for Zed. In November 2026, Discord announced it is rewriting its desktop app from Electron to Rust + GPUI (explicitly not Tauri).
+Rust GPU-rendered UI framework built by the Zed team for Zed. In November 2026, Discord announced it is rewriting its desktop app from Electron to Rust + GPUI (explicitly not Tauri; as stated in the spec; not independently verified).
 
 | Aspect | GPUI |
 | --- | --- |
@@ -340,5 +346,6 @@ Obsidian's editor component, CodeMirror 6, provides stages ②–⑤ almost enti
 
 - The spec is a draft （たたき台）; priorities and details may change.
 - The GUI decision (GPUI vs Tauri + CodeMirror 6 vs egui) is explicitly gated on Japanese IME verification, not yet made.
+- Internal tension in the spec: its next steps (spec §9) name only an egui prototype and then a Tauri + CodeMirror 6 prototype, while its current assessment (現時点の見立て) puts GPUI first and says to verify GPUI's `input` sample first. The PoC plan (`docs/plan.md`) resolves this by building all three.
 - License caution recorded in the spec: Zed's `editor` crate is GPL — reusing it would make Mica GPL. Only the design of Zed's `DisplayMap` should be referenced, not the code.
 - Reference links in spec §11: Microsoft Learn "WSL で VS Code の使用を開始する", VS Code Docs "Developing in WSL", VS Code API "Supporting Remote Development", Zed Docs "Remote Development", Zed Blog "Zed for Windows is here", mdedit (winget), awesome-markdown-editors (GitHub).
