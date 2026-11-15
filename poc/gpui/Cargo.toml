@@ -1,0 +1,20 @@
+[package]
+name = "mica-gpui-poc"
+version = "0.1.0"
+edition = "2021"
+description = "Mica PoC: GPUI. One window, file tree, tabs, live-preview editor on shared-core."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+mica-shared-core = { workspace = true }
+toml = { workspace = true }
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+# NOTE: gpui-pre-platform's default features do NOT include the Linux
+# display backends ("wayland" / "x11" are opt-in). Without them,
+# gpui-pre-linux builds with no backend and the app silently starts
+# headless (no window, no display connection) — see README.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["wayland", "x11"] }
+
+[[bin]]
+name = "mica-gpui"
+path = "src/main.rs"
