@@ -22,15 +22,16 @@ use gpui::{
     actions, div, fill, font, point, prelude::*, px, relative, rgb, size, white, App, Bounds,
     Context, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
     Focusable, GlobalElementId, InspectorElementId, KeyBinding, LayoutId, MouseButton,
-    MouseDownEvent, PaintQuad, Pixels, Point, Render, ShapedLine, Style, TextAlign, TextRun,
-    UTF16Selection, UnderlineStyle, Window,
+    MouseDownEvent, PaintQuad, Pixels, Point, Render, ShapedLine, Style, Subscription, TextAlign,
+    TextRun, UTF16Selection, UnderlineStyle, Window,
 };
 use mica_shared_core::auto_save::SaveState;
 use mica_shared_core::live_preview::{DisplayLine, DisplaySegment, DisplayStyle};
 use mica_shared_core::text_buffer::CursorPosition;
 
 use crate::model::{
-    cursor_for_utf16_offset, document_text, utf16_offset_for_cursor, EditorModel, AUTO_SAVE_WAIT,
+    cursor_for_utf16_offset, document_text, replace_utf16_range, utf16_offset_for_cursor,
+    EditorModel, PaletteKind, AUTO_SAVE_WAIT,
 };
 
 /// Base body font size (Notion §7: `font_size = 16`).
@@ -72,6 +73,28 @@ enum FocusArea {
     FileTree,
 }
 
+/// Where text from the platform input handler (typing, IME) goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputTarget {
+    /// The open palette's query.
+    Palette,
+    /// The active document.
+    Document,
+    /// Nowhere: the file tree has keyboard focus, and typing there must
+    /// not edit the document behind it.
+    Ignored,
+}
+
+fn input_target(palette_open: bool, focus_area: FocusArea) -> InputTarget {
+    if palette_open {
+        InputTarget::Palette
+    } else if focus_area == FocusArea::Editor {
+        InputTarget::Document
+    } else {
+        InputTarget::Ignored
+    }
+}
+
 /// One shaped editor line, kept for click-to-cursor and for the IME
 /// input handler (`bounds_for_range`, `character_index_for_point`).
 #[derive(Clone)]
@@ -93,12 +116,21 @@ pub struct MicaView {
     focus_handle: FocusHandle,
     focus_area: FocusArea,
     palette_open: bool,
-    palette_commands: bool,
+    palette_kind: PaletteKind,
     palette_query: String,
     palette_selected: usize,
-    /// Active IME composition range, as UTF-16 offsets over the
-    /// active document text (or over the palette query).
-    marked_range: Option<Range<usize>>,
+    /// Active IME composition range inside the palette query (UTF-16
+    /// offsets). The document's composition lives in the model
+    /// (`EditorModel::marked_range`).
+    palette_marked_range: Option<Range<usize>>,
+    /// Last error/notice for the status bar (failed save on tab close
+    /// or quit), cleared by the next successful action.
+    status_message: Option<String>,
+    /// Set after a Ctrl+Q whose flush failed: a second Ctrl+Q quits
+    /// anyway.
+    quit_despite_failed_save: bool,
+    /// Flushes unsaved documents when the app quits by any path.
+    _quit_subscription: Subscription,
     /// Last editor layout, for click handling and IME bounds.
     editor_bounds: Option<Bounds<Pixels>>,
     editor_lines: Vec<ShapedEditorLine>,
@@ -106,15 +138,24 @@ pub struct MicaView {
 
 impl MicaView {
     pub fn new(model: EditorModel, cx: &mut Context<Self>) -> Self {
+        let quit_subscription = cx.on_app_quit(|view: &mut Self, _cx| {
+            for error in view.model.flush_all() {
+                eprintln!("mica-gpui: save on quit failed: {error}");
+            }
+            async {}
+        });
         Self {
             model,
             focus_handle: cx.focus_handle(),
             focus_area: FocusArea::Editor,
             palette_open: false,
-            palette_commands: false,
+            palette_kind: PaletteKind::QuickOpen,
             palette_query: String::new(),
             palette_selected: 0,
-            marked_range: None,
+            palette_marked_range: None,
+            status_message: None,
+            quit_despite_failed_save: false,
+            _quit_subscription: quit_subscription,
             editor_bounds: None,
             editor_lines: Vec::new(),
         }
@@ -185,25 +226,48 @@ impl MicaView {
     /// so the palette needs no second focus handle. (A separate
     /// palette focus handle was tried first: with no input handler
     /// registered for it, typed text was silently dropped.)
-    fn open_palette(&mut self, commands: bool, _window: &mut Window, cx: &mut Context<Self>) {
+    fn open_palette(&mut self, kind: PaletteKind, _window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = true;
-        self.palette_commands = commands;
+        self.palette_kind = kind;
         self.palette_query.clear();
         self.palette_selected = 0;
-        self.marked_range = None;
+        self.palette_marked_range = None;
         cx.notify();
     }
 
     fn close_palette(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = false;
         self.palette_query.clear();
-        self.marked_range = None;
+        self.palette_marked_range = None;
         cx.notify();
     }
 
     fn palette_results(&self) -> Vec<mica_shared_core::command_palette::PaletteEntry> {
         self.model
-            .filtered_palette_entries(self.palette_commands, &self.palette_query)
+            .filtered_palette_entries(self.palette_kind, &self.palette_query)
+    }
+
+    /// Close the active tab. Unsaved edits are saved first; if that
+    /// save fails the tab stays open and the status bar says why.
+    fn close_active_tab(&mut self, cx: &mut Context<Self>) {
+        let index = self.model.tabs.active_tab().and_then(|active| {
+            self.model
+                .tabs
+                .tabs()
+                .iter()
+                .position(|tab| tab.path == active.path)
+        });
+        if let Some(index) = index {
+            match self.model.close_tab(index) {
+                Ok(_) => self.status_message = None,
+                Err(error) => {
+                    self.status_message = Some(format!(
+                        "not closing the tab: save failed: {error} (edits kept)"
+                    ));
+                }
+            }
+        }
+        cx.notify();
     }
 
     fn run_palette_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -215,7 +279,7 @@ impl MicaView {
             return;
         };
         let action = entry.action.clone();
-        if self.palette_commands {
+        if self.palette_kind == PaletteKind::Commands {
             self.close_palette(window, cx);
             self.run_command(&action, window, cx);
         } else {
@@ -231,26 +295,13 @@ impl MicaView {
     /// Run a command by name (from the palette or the keymap).
     fn run_command(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) {
         match command {
-            "quick_open" => self.open_palette(false, window, cx),
-            "command_palette" => self.open_palette(true, window, cx),
+            "quick_open" => self.open_palette(PaletteKind::QuickOpen, window, cx),
+            "command_palette" => self.open_palette(PaletteKind::Commands, window, cx),
             "toggle_file_tree" => {
                 self.model.show_tree = !self.model.show_tree;
                 cx.notify();
             }
-            "tab_close" => {
-                if let Some(active) = self.model.tabs.active_tab().map(|tab| tab.path.clone()) {
-                    let index = self
-                        .model
-                        .tabs
-                        .tabs()
-                        .iter()
-                        .position(|tab| tab.path == active);
-                    if let Some(index) = index {
-                        self.model.tabs.close(index);
-                        cx.notify();
-                    }
-                }
-            }
+            "tab_close" => self.close_active_tab(cx),
             "tab_recent_next" | "tab_next" => {
                 self.model.tabs.focus_next();
                 cx.notify();
@@ -275,7 +326,7 @@ impl MicaView {
     // -- actions --------------------------------------------------------
 
     fn on_quick_open(&mut self, _: &QuickOpen, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_palette(false, window, cx);
+        self.open_palette(PaletteKind::QuickOpen, window, cx);
     }
 
     fn on_command_palette(
@@ -284,7 +335,7 @@ impl MicaView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_palette(true, window, cx);
+        self.open_palette(PaletteKind::Commands, window, cx);
     }
 
     fn on_toggle_tree(&mut self, _: &ToggleFileTree, _: &mut Window, cx: &mut Context<Self>) {
@@ -292,26 +343,16 @@ impl MicaView {
         cx.notify();
     }
 
-    fn on_focus_cycle(&mut self, _: &FocusCycle, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_focus_cycle(&mut self, _: &FocusCycle, _: &mut Window, cx: &mut Context<Self>) {
         self.focus_area = match self.focus_area {
             FocusArea::Editor => FocusArea::FileTree,
             FocusArea::FileTree => FocusArea::Editor,
         };
         cx.notify();
-        let _ = window;
     }
 
     fn on_tab_close(&mut self, _: &TabClose, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(index) = self.model.tabs.active_tab().and_then(|active| {
-            self.model
-                .tabs
-                .tabs()
-                .iter()
-                .position(|tab| tab.path == active.path)
-        }) {
-            self.model.tabs.close(index);
-        }
-        cx.notify();
+        self.close_active_tab(cx);
     }
 
     fn on_tab_next(&mut self, _: &TabNext, _: &mut Window, cx: &mut Context<Self>) {
@@ -442,8 +483,20 @@ impl MicaView {
         }
     }
 
+    /// Ctrl+Q: save every dirty document, then quit. If a save fails,
+    /// stay open and say so; a second Ctrl+Q quits anyway.
     fn on_quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
-        cx.quit();
+        let errors = self.model.flush_all();
+        if errors.is_empty() || self.quit_despite_failed_save {
+            cx.quit();
+            return;
+        }
+        self.quit_despite_failed_save = true;
+        self.status_message = Some(format!(
+            "not quitting: save failed for {} — press Ctrl+Q again to quit anyway",
+            errors.join("; ")
+        ));
+        cx.notify();
     }
 
     fn on_tree_click(
@@ -599,7 +652,7 @@ impl Render for MicaView {
             .active_tab()
             .map(|tab| tab.title.clone())
             .unwrap_or_else(|| "No file open".to_string());
-        let status = format!(
+        let mut status = format!(
             "{}  ·  {active_title}  ·  {save_label}  ·  line {}, column {}  ·  {}",
             self.model.folder.display(),
             cursor.line + 1,
@@ -609,6 +662,10 @@ impl Render for MicaView {
                 FocusArea::FileTree => "file tree (F6 to switch)",
             }
         );
+        if let Some(message) = &self.status_message {
+            status.push_str("  ·  ");
+            status.push_str(message);
+        }
 
         let mut root = div()
             .flex()
@@ -641,7 +698,7 @@ impl Render for MicaView {
         if self.palette_open {
             let results = self.palette_results();
             let query_display = if self.palette_query.is_empty() {
-                if self.palette_commands {
+                if self.palette_kind == PaletteKind::Commands {
                     "Type a command…".to_string()
                 } else {
                     "Type a file name…".to_string()
@@ -838,14 +895,26 @@ impl EntityInputHandler for MicaView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        self.marked_range.clone()
+        match input_target(self.palette_open, self.focus_area) {
+            InputTarget::Palette => self.palette_marked_range.clone(),
+            InputTarget::Document => self.model.marked_range(),
+            InputTarget::Ignored => None,
+        }
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.marked_range = None;
+        self.palette_marked_range = None;
+        // The composed text stays; it is now a normal edit, so start
+        // the auto-save timer for it.
+        if self.model.unmark_text() {
+            self.schedule_auto_save(cx);
+        }
         cx.notify();
     }
 
+    /// Typed text and IME commits. With `range_utf16 = None` (what
+    /// X11, Wayland and Windows send) the current composition is
+    /// replaced, else the cursor — like GPUI's `examples/input.rs`.
     fn replace_text_in_range(
         &mut self,
         range_utf16: Option<Range<usize>>,
@@ -853,34 +922,33 @@ impl EntityInputHandler for MicaView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.palette_open {
-            let query = &mut self.palette_query;
-            let utf16: Vec<u16> = query.encode_utf16().collect();
-            let (start, end) = range_utf16
-                .map(|range| (range.start.min(utf16.len()), range.end.min(utf16.len())))
-                .unwrap_or((utf16.len(), utf16.len()));
-            let mut chars: Vec<char> = query.chars().collect();
-            let char_start = utf16[..start]
-                .iter()
-                .filter(|unit| (**unit & 0xFC00) != 0xDC00)
-                .count();
-            let char_end = utf16[..end]
-                .iter()
-                .filter(|unit| (**unit & 0xFC00) != 0xDC00)
-                .count();
-            chars.splice(char_start..char_end, text.chars());
-            *query = chars.into_iter().collect();
-            self.palette_selected = 0;
-            self.marked_range = None;
-            cx.notify();
-            return;
+        match input_target(self.palette_open, self.focus_area) {
+            InputTarget::Palette => {
+                let end = self.palette_query.encode_utf16().count();
+                let range = range_utf16
+                    .or(self.palette_marked_range.take())
+                    .unwrap_or(end..end);
+                replace_utf16_range(&mut self.palette_query, range, text);
+                self.palette_selected = 0;
+                cx.notify();
+            }
+            InputTarget::Document => {
+                self.model
+                    .replace_text_in_range(range_utf16.map(|range| (range.start, range.end)), text);
+                // The commit is the edit: the model recorded it, so
+                // start the auto-save timer.
+                self.schedule_auto_save(cx);
+                cx.notify();
+            }
+            InputTarget::Ignored => {}
         }
-        self.model
-            .replace_text_in_range(range_utf16.map(|range| (range.start, range.end)), text);
-        self.marked_range = None;
-        self.note_edit_and_schedule_auto_save(cx);
     }
 
+    /// IME preedit updates. Each update replaces the previous preedit
+    /// (the marked range) when the platform passes `None`. Composing
+    /// text is not saved: auto-save is only scheduled when the
+    /// composition ends (cancel = empty text here, or a commit through
+    /// `replace_text_in_range`, or `unmark_text`).
     fn replace_and_mark_text_in_range(
         &mut self,
         range_utf16: Option<Range<usize>>,
@@ -889,34 +957,32 @@ impl EntityInputHandler for MicaView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.palette_open {
-            self.replace_text_in_range(range_utf16, new_text, _window, cx);
-            return;
-        }
-        let Some(buffer) = self.model.active_buffer() else {
-            return;
-        };
-        let buffer = buffer.clone();
-        let start_utf16 = range_utf16
-            .as_ref()
-            .map(|range| range.start)
-            .unwrap_or_else(|| utf16_offset_for_cursor(&buffer, self.model.cursor()));
-        self.model
-            .replace_text_in_range(range_utf16.map(|range| (range.start, range.end)), new_text);
-        if !new_text.is_empty() {
-            let end_utf16 = start_utf16 + new_text.encode_utf16().count();
-            self.marked_range = Some(start_utf16..end_utf16);
-        } else {
-            self.marked_range = None;
-        }
-        if let Some(selected) = new_selected_range {
-            let end_utf16 = start_utf16 + selected.end;
-            if let Some(buffer) = self.model.active_buffer() {
-                let cursor = cursor_for_utf16_offset(buffer, end_utf16);
-                self.model.set_cursor(cursor);
+        match input_target(self.palette_open, self.focus_area) {
+            InputTarget::Palette => {
+                let end = self.palette_query.encode_utf16().count();
+                let range = range_utf16
+                    .or(self.palette_marked_range.clone())
+                    .unwrap_or(end..end);
+                let start = replace_utf16_range(&mut self.palette_query, range, new_text);
+                self.palette_marked_range =
+                    (!new_text.is_empty()).then(|| start..start + new_text.encode_utf16().count());
+                self.palette_selected = 0;
+                cx.notify();
             }
+            InputTarget::Document => {
+                self.model.replace_and_mark_text_in_range(
+                    range_utf16.map(|range| (range.start, range.end)),
+                    new_text,
+                    new_selected_range.map(|range| (range.start, range.end)),
+                );
+                if self.model.marked_range().is_none() {
+                    // Composition cancelled: the marked range cleared.
+                    self.schedule_auto_save(cx);
+                }
+                cx.notify();
+            }
+            InputTarget::Ignored => {}
         }
-        self.note_edit_and_schedule_auto_save(cx);
     }
 
     fn bounds_for_range(
@@ -1039,7 +1105,6 @@ impl Element for EditorElement {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         style.size.height = height.into();
-        let _ = window;
         (window.request_layout(style, [], cx), ())
     }
 
@@ -1061,14 +1126,13 @@ impl Element for EditorElement {
         let mut cursor_quad = None;
         let mut top = px(0.);
         for (index, display) in display_lines.iter().enumerate() {
-            // Fallback for lines the decoration layer drops: fenced
-            // code-block content lines have no spans in shared-core
-            // (`parse_line` returns `spans: []` for them), so their
-            // display line is empty. Render the raw buffer line as one
-            // monospace segment instead of a blank line. This is a
-            // rendering fallback in the view, not a re-implementation
-            // of the parser: it only triggers when the display line is
-            // empty but the buffer line is not.
+            // Fallback for a display line that is empty although the
+            // buffer line is not. Fenced code-block content lines now
+            // get a monospace span from shared-core, so this only
+            // fires for lines whose whole content is a hidden marker
+            // (for example a bare `# ` or `- ` off the cursor line).
+            // Render the raw buffer line as one monospace segment
+            // instead of a blank line (unchanged PoC behaviour).
             let display = if display.display_text.is_empty() {
                 match view
                     .model
@@ -1219,7 +1283,7 @@ impl MicaView {
     /// The marked (IME composition) range as (line, char range on that
     /// line), if the composition sits on one line.
     fn marked_char_range_on_line(&self) -> Option<(usize, Range<usize>)> {
-        let marked = self.marked_range.clone()?;
+        let marked = self.model.marked_range()?;
         let buffer = self.model.active_buffer()?;
         let start = cursor_for_utf16_offset(buffer, marked.start);
         let end = cursor_for_utf16_offset(buffer, marked.end);
@@ -1232,9 +1296,10 @@ impl MicaView {
 
 // -- keybindings ----------------------------------------------------------
 
-/// Build GPUI key bindings from the loaded keymap's `[global]` table
-/// (plus the editor keys this PoC always needs). GPUI keystrokes use
-/// `-` separators (`ctrl-p`), the TOML file uses `+` (`ctrl+p`).
+/// Build the fixed editor key bindings this PoC always needs
+/// (arrows, Backspace/Delete, Enter, Escape, Ctrl+S, F6, Ctrl+Q). It
+/// does not read the keymap file: [`key_bindings_from_keymap_file`]
+/// adds the `[global]` table's bindings on top of these.
 pub fn build_key_bindings() -> Vec<KeyBinding> {
     let bindings = vec![
         KeyBinding::new("backspace", Backspace, None),
@@ -1301,4 +1366,29 @@ pub fn key_bindings_from_keymap_file(cx: &App) -> Vec<KeyBinding> {
         }
     }
     bindings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_input_never_edits_the_document_while_the_tree_is_focused() {
+        // Typing (or an IME commit) with the file tree focused must not
+        // reach the document behind it.
+        assert_eq!(
+            input_target(false, FocusArea::FileTree),
+            InputTarget::Ignored
+        );
+        assert_eq!(
+            input_target(false, FocusArea::Editor),
+            InputTarget::Document
+        );
+        // The palette owns text input whenever it is open.
+        assert_eq!(
+            input_target(true, FocusArea::FileTree),
+            InputTarget::Palette
+        );
+        assert_eq!(input_target(true, FocusArea::Editor), InputTarget::Palette);
+    }
 }

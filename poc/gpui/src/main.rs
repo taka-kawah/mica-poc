@@ -26,7 +26,7 @@ use gpui::{
 };
 use gpui_platform::application;
 
-use model::{document_text, EditorModel};
+use model::{document_text, EditorModel, PaletteKind};
 use view::{key_bindings_from_keymap_file, MicaView};
 
 /// Default folder when none is given on the command line: the shared
@@ -84,7 +84,21 @@ fn run_gui(folder: &Path) {
                     }),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| MicaView::new(model, cx)),
+                |window, cx| {
+                    let view = cx.new(|cx| MicaView::new(model, cx));
+                    // Closing the window saves every dirty document
+                    // first (Ctrl+Q and app quit flush in the view).
+                    let weak_view = view.downgrade();
+                    window.on_window_should_close(cx, move |_, cx| {
+                        let _ = weak_view.update(cx, |view, _| {
+                            for error in view.model.flush_all() {
+                                eprintln!("mica-gpui: save on close failed: {error}");
+                            }
+                        });
+                        true
+                    });
+                    view
+                },
             )
             .expect("failed to open the Mica window");
         window
@@ -200,13 +214,13 @@ fn smoke_test(folder: &Path) -> i32 {
 
     // Palette: Quick Open finds the note, the command palette finds
     // the tab command.
-    let files = model.filtered_palette_entries(false, "welc");
+    let files = model.filtered_palette_entries(PaletteKind::QuickOpen, "welc");
     check(
         "Quick Open finds welcome.md",
         files.iter().any(|entry| entry.title == "welcome.md"),
         "query 'welc'",
     );
-    let commands = model.filtered_palette_entries(true, "tab");
+    let commands = model.filtered_palette_entries(PaletteKind::Commands, "tab");
     check(
         "command palette finds tab_close",
         commands.iter().any(|entry| entry.action == "tab_close"),

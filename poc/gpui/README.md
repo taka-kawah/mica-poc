@@ -89,12 +89,13 @@ turned into GPUI bindings at startup):
 | Ctrl+P | Quick Open (fuzzy file search) |
 | Ctrl+Shift+P | Command palette |
 | Ctrl+B | Toggle file tree |
-| Ctrl+W | Close active tab |
+| Ctrl+W | Close active tab (unsaved edits are saved first; if that fails the tab stays open and the status bar says why) |
 | Ctrl+Tab | Next tab |
 | Ctrl+S | Save now (auto-save also runs) |
 | F6 | Switch keyboard focus between editor and file tree |
 | Arrows / Home / End / Backspace / Delete / Enter | Cursor movement and editing (in the tree: Up/Down move the selection, Enter opens the file) |
 | Esc | Close the palette |
+| Ctrl+Q | Save every dirty document, then quit (if a save fails it stays open; a second Ctrl+Q quits anyway). Closing the window also saves first. |
 
 ## What was verified on this Linux VM
 
@@ -184,12 +185,13 @@ timeout 60 xvfb-run -a -s "-screen 0 1280x900x24" ./target/debug/mica-gpui ~/wor
    this is a snapshot quirk, not a spec decision — a real product
    should resolve the body font properly instead of hard-coding.
 4. **Fenced code-block content rendered blank**: shared-core's
-   `parse_line` returns `spans: []` for code-block content lines,
-   so `decorate_line` produces an empty display line. The view has
-   a documented fallback: when a display line is empty but its
-   buffer line is not, it renders the raw line as one monospace
-   segment. (Shared-core was not modified; the gap is reported
-   here for the shared-core owner.)
+   `parse_line` returned `spans: []` for code-block content lines,
+   so `decorate_line` produced an empty display line. Fixed in
+   shared-core: interior lines now carry one code span, so they
+   decorate as one monospace segment. The view's fallback (render
+   the raw line as one monospace segment when the display line is
+   empty but the buffer line is not) remains only for lines whose
+   whole content is a hidden marker, such as a bare `# `.
 
 ## System dependencies
 

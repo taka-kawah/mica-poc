@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -88,6 +89,40 @@ pub fn utf16_offset_for_cursor(buffer: &TextBuffer, cursor: CursorPosition) -> u
     offset
 }
 
+/// Which list the command palette overlay shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteKind {
+    /// Ctrl+P: Markdown files in the folder.
+    QuickOpen,
+    /// Ctrl+Shift+P: command names.
+    Commands,
+}
+
+/// Replace the UTF-16 range `range_utf16` of `text` with `new_text`
+/// (offsets clamp to the end; a reversed range is normalised). Returns
+/// the UTF-16 offset where `new_text` starts. Used for the palette
+/// query, which is a plain string rather than a buffer.
+pub fn replace_utf16_range(text: &mut String, range_utf16: Range<usize>, new_text: &str) -> usize {
+    let utf16: Vec<u16> = text.encode_utf16().collect();
+    let mut start = range_utf16.start.min(utf16.len());
+    let mut end = range_utf16.end.min(utf16.len());
+    if end < start {
+        std::mem::swap(&mut start, &mut end);
+    }
+    // Count chars by skipping low surrogates (the second half of a
+    // surrogate pair belongs to the char that started before it).
+    let chars_before = |offset: usize| {
+        utf16[..offset]
+            .iter()
+            .filter(|unit| (**unit & 0xFC00) != 0xDC00)
+            .count()
+    };
+    let mut chars: Vec<char> = text.chars().collect();
+    chars.splice(chars_before(start)..chars_before(end), new_text.chars());
+    *text = chars.into_iter().collect();
+    start
+}
+
 /// The editor model: folder, tree, tabs, one buffer + cursor +
 /// auto-saver per open file, and the global keymap.
 pub struct EditorModel {
@@ -107,6 +142,11 @@ pub struct EditorModel {
     /// Index into `tree` of the keyboard-selected row.
     pub tree_selection: usize,
     pub show_tree: bool,
+    /// Active IME composition: the document it belongs to and its
+    /// UTF-16 range over that document's `document_text`. Read it
+    /// through [`EditorModel::marked_range`], which only reports it
+    /// for the active document.
+    ime_marked: Option<(PathBuf, Range<usize>)>,
 }
 
 impl EditorModel {
@@ -125,6 +165,7 @@ impl EditorModel {
             keymap,
             tree_selection: 0,
             show_tree: true,
+            ime_marked: None,
         }
     }
 
@@ -315,16 +356,32 @@ impl EditorModel {
         });
     }
 
-    /// Apply an input-handler edit: replace the UTF-16 range
-    /// `range_utf16` (or the cursor when `None`) in the active
-    /// document with `text`. Returns the new cursor position.
-    pub fn replace_text_in_range(
+    /// The active IME composition range (UTF-16 offsets over the
+    /// active document), if a composition is in progress there.
+    pub fn marked_range(&self) -> Option<Range<usize>> {
+        let (path, range) = self.ime_marked.as_ref()?;
+        (self.active_path().as_ref() == Some(path)).then(|| range.clone())
+    }
+
+    /// The range an input-handler call with `range_utf16` acts on:
+    /// the given range, else the current composition (the platform
+    /// passes `None` for every preedit update and the commit on X11,
+    /// Wayland and Windows), else the cursor. Same rule as GPUI's
+    /// `examples/input.rs` (`.or(self.marked_range)`).
+    fn input_range(&self, range_utf16: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        range_utf16.or_else(|| self.marked_range().map(|range| (range.start, range.end)))
+    }
+
+    /// Replace a UTF-16 range (or the cursor when `None`) of the
+    /// active document with `text`, without recording an edit.
+    /// Returns (start of the inserted text, cursor after it).
+    fn replace_range_raw(
         &mut self,
         range_utf16: Option<(usize, usize)>,
         text: &str,
-    ) -> CursorPosition {
+    ) -> (CursorPosition, CursorPosition) {
         let Some(buffer) = self.active_buffer() else {
-            return CursorPosition::default();
+            return (CursorPosition::default(), CursorPosition::default());
         };
         let (start, end) = match range_utf16 {
             Some((start, end)) => (
@@ -349,8 +406,84 @@ impl EditorModel {
             .map(|buffer| buffer.insert(start, text))
             .unwrap_or(start);
         self.set_cursor(new_cursor);
+        (start, new_cursor)
+    }
+
+    /// Apply an input-handler edit (typed text or an IME commit):
+    /// replace `range_utf16` — or, when `None`, the current IME
+    /// composition, or the cursor when nothing is composing — with
+    /// `text`. Ends any composition and records an edit (auto-save).
+    /// Returns the new cursor position.
+    pub fn replace_text_in_range(
+        &mut self,
+        range_utf16: Option<(usize, usize)>,
+        text: &str,
+    ) -> CursorPosition {
+        let range = self.input_range(range_utf16);
+        self.ime_marked = None;
+        let (_, new_cursor) = self.replace_range_raw(range, text);
         self.note_edit();
         new_cursor
+    }
+
+    /// Apply an IME preedit update: replace `range_utf16` (or the
+    /// current composition, or the cursor) with `text` and mark it as
+    /// the composition. `new_selected_utf16` is the cursor/selection
+    /// inside `text` (relative UTF-16 offsets); the cursor goes to its
+    /// end, or to the end of `text` when `None`.
+    ///
+    /// Composing text is NOT recorded as an edit: it does not mark the
+    /// document dirty or restart the auto-save timer, and auto-save
+    /// skips a document while it is composing. Only when the
+    /// composition ends (empty `text` = cancelled, or a commit through
+    /// [`Self::replace_text_in_range`], or [`Self::unmark_text`]) is
+    /// the edit recorded.
+    pub fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<(usize, usize)>,
+        text: &str,
+        new_selected_utf16: Option<(usize, usize)>,
+    ) {
+        let Some(path) = self.active_path() else {
+            return;
+        };
+        let range = self.input_range(range_utf16);
+        let (start, _) = self.replace_range_raw(range, text);
+        if text.is_empty() {
+            // Composition cancelled: the marked range clears.
+            self.ime_marked = None;
+            self.note_edit();
+            return;
+        }
+        let Some(buffer) = self.active_buffer() else {
+            return;
+        };
+        let start_utf16 = utf16_offset_for_cursor(buffer, start);
+        let text_utf16 = text.encode_utf16().count();
+        let cursor_utf16 = start_utf16
+            + new_selected_utf16
+                .map(|(_, end)| end.min(text_utf16))
+                .unwrap_or(text_utf16);
+        let cursor = cursor_for_utf16_offset(buffer, cursor_utf16);
+        self.ime_marked = Some((path, start_utf16..start_utf16 + text_utf16));
+        self.set_cursor(cursor);
+    }
+
+    /// The platform accepted the composition as it is. Returns `true`
+    /// when a composition was in progress (its text is now a normal
+    /// edit and the auto-save timer starts).
+    pub fn unmark_text(&mut self) -> bool {
+        if self.ime_marked.take().is_some() {
+            self.note_edit();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// `true` while an IME composition is in progress in `path`.
+    fn is_composing(&self, path: &Path) -> bool {
+        matches!(&self.ime_marked, Some((marked, _)) if marked == path)
     }
 
     /// Record an edit: mark the active tab dirty and restart the
@@ -372,39 +505,59 @@ impl EditorModel {
             .unwrap_or(SaveState::Clean)
     }
 
-    /// Save the active document now when its debounce delay has
-    /// passed. Returns `true` when a save happened.
-    pub fn maybe_auto_save(&mut self) -> bool {
-        let Some(path) = self.active_path() else {
-            return false;
-        };
-        let due = self
-            .savers
-            .get(&path)
-            .map(|saver| saver.save_is_due())
-            .unwrap_or(false);
-        if !due {
-            return false;
-        }
+    /// `true` when the document at `path` has edits not on disk yet
+    /// (including a save that failed).
+    pub fn has_unsaved_changes(&self, path: &Path) -> bool {
+        self.savers
+            .get(path)
+            .map(|saver| matches!(saver.state(), SaveState::Dirty | SaveState::Saving))
+            .unwrap_or(false)
+    }
+
+    /// Save one open document now. On failure it stays dirty (the
+    /// debounce restarts, so auto-save retries) and keeps its edits.
+    fn save_path(&mut self, path: &Path) -> io::Result<()> {
         let content = self
             .buffers
-            .get(&path)
+            .get(path)
             .map(|buffer| buffer.to_text())
             .unwrap_or_default();
-        if let Some(saver) = self.savers.get_mut(&path) {
-            saver.begin_save();
-        }
-        match save_atomically(&path, &content) {
+        let saver = self
+            .savers
+            .entry(path.to_path_buf())
+            .or_insert_with(AutoSaver::new);
+        saver.begin_save();
+        match save_atomically(path, &content) {
             Ok(()) => {
-                if let Some(saver) = self.savers.get_mut(&path) {
-                    saver.finish_save();
-                    saver.acknowledge_saved();
-                }
-                self.tabs.set_dirty(&path, false);
-                true
+                saver.finish_save();
+                saver.acknowledge_saved();
+                self.tabs.set_dirty(path, false);
+                Ok(())
             }
-            Err(_) => false,
+            Err(error) => {
+                saver.note_edit();
+                Err(error)
+            }
         }
+    }
+
+    /// Auto-save tick: save EVERY open document (active or in a
+    /// background tab) whose debounce delay has passed. A document
+    /// with an IME composition in progress is skipped until the
+    /// composition ends. Returns `true` when at least one save
+    /// happened.
+    pub fn maybe_auto_save(&mut self) -> bool {
+        let due: Vec<PathBuf> = self
+            .savers
+            .iter()
+            .filter(|(path, saver)| saver.save_is_due() && !self.is_composing(path))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let mut saved = false;
+        for path in due {
+            saved |= self.save_path(&path).is_ok();
+        }
+        saved
     }
 
     /// Save the active document immediately, ignoring the debounce.
@@ -412,21 +565,48 @@ impl EditorModel {
         let Some(path) = self.active_path() else {
             return false;
         };
-        let content = self
-            .buffers
-            .get(&path)
-            .map(|buffer| buffer.to_text())
-            .unwrap_or_default();
-        if save_atomically(&path, &content).is_ok() {
-            if let Some(saver) = self.savers.get_mut(&path) {
-                saver.finish_save();
-                saver.acknowledge_saved();
-            }
-            self.tabs.set_dirty(&path, false);
-            true
-        } else {
-            false
+        self.save_path(&path).is_ok()
+    }
+
+    /// Save every document with unsaved edits now (quit). Returns one
+    /// message per failed save; an empty list means everything is on
+    /// disk.
+    pub fn flush_all(&mut self) -> Vec<String> {
+        let dirty: Vec<PathBuf> = self
+            .savers
+            .keys()
+            .filter(|path| self.has_unsaved_changes(path))
+            .cloned()
+            .collect();
+        dirty
+            .into_iter()
+            .filter_map(|path| {
+                self.save_path(&path)
+                    .err()
+                    .map(|error| format!("{}: {error}", path.display()))
+            })
+            .collect()
+    }
+
+    /// Close the tab at `index`. A document with unsaved edits is
+    /// saved first; when that save fails the tab stays open (edits
+    /// kept) and the error is returned. `Ok(false)` means there was no
+    /// tab at `index`.
+    pub fn close_tab(&mut self, index: usize) -> io::Result<bool> {
+        let Some(path) = self.tabs.tabs().get(index).map(|tab| tab.path.clone()) else {
+            return Ok(false);
+        };
+        if self.has_unsaved_changes(&path) {
+            self.save_path(&path)?;
         }
+        self.tabs.close(index);
+        self.buffers.remove(&path);
+        self.cursors.remove(&path);
+        self.savers.remove(&path);
+        if self.is_composing(&path) {
+            self.ime_marked = None;
+        }
+        Ok(true)
     }
 
     /// Live-preview display lines for the active buffer, with the
@@ -450,18 +630,18 @@ impl EditorModel {
 
     /// Palette entries: commands for the command palette, Markdown
     /// files for Quick Open.
-    pub fn palette_entries(&self, commands: bool) -> Vec<PaletteEntry> {
-        if commands {
-            KNOWN_COMMANDS
+    pub fn palette_entries(&self, kind: PaletteKind) -> Vec<PaletteEntry> {
+        match kind {
+            PaletteKind::Commands => KNOWN_COMMANDS
                 .iter()
                 .map(|command| PaletteEntry {
                     title: (*command).to_string(),
                     detail: "command".to_string(),
                     action: (*command).to_string(),
                 })
-                .collect()
-        } else {
-            self.tree
+                .collect(),
+            PaletteKind::QuickOpen => self
+                .tree
                 .iter()
                 .filter(|entry| entry.is_markdown)
                 .map(|entry| PaletteEntry {
@@ -469,13 +649,13 @@ impl EditorModel {
                     detail: entry.path.to_string_lossy().into_owned(),
                     action: entry.path.to_string_lossy().into_owned(),
                 })
-                .collect()
+                .collect(),
         }
     }
 
     /// Filtered palette entries for a query, best match first.
-    pub fn filtered_palette_entries(&self, commands: bool, query: &str) -> Vec<PaletteEntry> {
-        let entries = self.palette_entries(commands);
+    pub fn filtered_palette_entries(&self, kind: PaletteKind, query: &str) -> Vec<PaletteEntry> {
+        let entries = self.palette_entries(kind);
         filter_entries(query, &entries)
             .into_iter()
             .cloned()
@@ -574,7 +754,7 @@ mod tests {
 
     #[test]
     fn utf16_offsets_round_trip_with_japanese_and_emoji() {
-        let mut model = model_with_text("こんにちは🌸\nsecond line\n");
+        let model = model_with_text("こんにちは🌸\nsecond line\n");
         let buffer = model.active_buffer().unwrap().clone();
         // Every (line, column) survives a round trip through UTF-16
         // offsets, including the emoji (a surrogate pair: 2 UTF-16
@@ -595,7 +775,183 @@ mod tests {
             CursorPosition { line: 0, column: 6 },
             "emoji must count as one char column"
         );
-        let _ = &mut model;
+    }
+
+    #[test]
+    fn ime_preedit_updates_replace_the_composition_then_commit() {
+        // X11 / Wayland / Windows pass `range_utf16 = None` for every
+        // preedit update and for the commit. Each update must replace
+        // the previous preedit, not insert next to it (which produced
+        // かかん漢 before the fix).
+        let mut model = model_with_text("前\n");
+        model.set_cursor(CursorPosition { line: 0, column: 1 });
+        model.replace_and_mark_text_in_range(None, "か", Some((1, 1)));
+        assert_eq!(document_text(model.active_buffer().unwrap()), "前か");
+        assert_eq!(model.marked_range(), Some(1..2));
+        assert_eq!(model.cursor(), CursorPosition { line: 0, column: 2 });
+        model.replace_and_mark_text_in_range(None, "かん", Some((2, 2)));
+        assert_eq!(document_text(model.active_buffer().unwrap()), "前かん");
+        assert_eq!(model.marked_range(), Some(1..3));
+        // Composing text is not an edit: no dirty state, no auto-save.
+        assert_eq!(model.save_state(), SaveState::Clean);
+        assert!(!model.tabs.active_tab().unwrap().dirty);
+
+        model.replace_text_in_range(None, "漢");
+        let text = document_text(model.active_buffer().unwrap());
+        assert_eq!(text, "前漢");
+        assert_eq!(text.matches('漢').count(), 1);
+        assert!(!text.contains('か'));
+        assert_eq!(model.marked_range(), None);
+        assert_eq!(model.cursor(), CursorPosition { line: 0, column: 2 });
+        // The commit is the edit that starts auto-save.
+        assert_eq!(model.save_state(), SaveState::Dirty);
+
+        // A plain insert after the commit goes to the cursor again.
+        model.replace_text_in_range(None, "字");
+        assert_eq!(document_text(model.active_buffer().unwrap()), "前漢字");
+    }
+
+    #[test]
+    fn ime_cancel_and_unmark_end_the_composition() {
+        let mut model = model_with_text("ab\n");
+        model.set_cursor(CursorPosition { line: 0, column: 1 });
+        model.replace_and_mark_text_in_range(None, "に", None);
+        assert_eq!(document_text(model.active_buffer().unwrap()), "aにb");
+        // Cancel: empty preedit removes the composition.
+        model.replace_and_mark_text_in_range(None, "", None);
+        assert_eq!(document_text(model.active_buffer().unwrap()), "ab");
+        assert_eq!(model.marked_range(), None);
+        // Unmark keeps the composed text as a normal edit.
+        model.replace_and_mark_text_in_range(None, "日", None);
+        assert!(model.unmark_text());
+        assert_eq!(document_text(model.active_buffer().unwrap()), "a日b");
+        assert_eq!(model.marked_range(), None);
+        assert_eq!(model.save_state(), SaveState::Dirty);
+        assert!(!model.unmark_text(), "nothing left to unmark");
+    }
+
+    #[test]
+    fn palette_query_replace_utf16_range() {
+        let mut query = String::from("ab🌸");
+        // Preedit → preedit → commit over the same range, as the
+        // palette does with its own marked range.
+        let start = replace_utf16_range(&mut query, 4..4, "か");
+        assert_eq!((query.as_str(), start), ("ab🌸か", 4));
+        replace_utf16_range(&mut query, 4..5, "かん");
+        replace_utf16_range(&mut query, 4..6, "漢");
+        assert_eq!(query, "ab🌸漢");
+        // Replacing across the surrogate pair removes the whole emoji.
+        replace_utf16_range(&mut query, 2..4, "");
+        assert_eq!(query, "ab漢");
+    }
+
+    /// A model over a fresh folder with `a.md` and `b.md` open; `b.md`
+    /// is active and `a.md` is a background tab with one unsaved edit
+    /// (its saver uses `delay`).
+    fn model_with_dirty_background_tab(
+        name: &str,
+        delay: Duration,
+    ) -> (EditorModel, PathBuf, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("mica-gpui-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.md");
+        let b = dir.join("b.md");
+        std::fs::write(&a, "alpha\n").unwrap();
+        std::fs::write(&b, "beta\n").unwrap();
+        let mut model = EditorModel::open_folder(&dir);
+        model.open_file(&a).unwrap();
+        model.savers.insert(a.clone(), AutoSaver::with_delay(delay));
+        model.insert_at_cursor("edited ");
+        model.open_file(&b).unwrap();
+        assert_eq!(model.active_path().as_deref(), Some(b.as_path()));
+        assert!(model.has_unsaved_changes(&a));
+        (model, dir, a, b)
+    }
+
+    #[test]
+    fn auto_save_tick_saves_dirty_background_documents() {
+        let (mut model, dir, a, _) =
+            model_with_dirty_background_tab("tick-background", Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(model.maybe_auto_save(), "background document was due");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "edited alpha\n");
+        assert!(!model.has_unsaved_changes(&a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_save_skips_a_document_while_composing() {
+        let (mut model, dir, _, b) =
+            model_with_dirty_background_tab("tick-composing", Duration::from_millis(1));
+        model
+            .savers
+            .insert(b.clone(), AutoSaver::with_delay(Duration::from_millis(1)));
+        model.insert_at_cursor("typed ");
+        model.replace_and_mark_text_in_range(None, "か", None);
+        std::thread::sleep(Duration::from_millis(10));
+        model.maybe_auto_save();
+        assert_eq!(
+            std::fs::read_to_string(&b).unwrap(),
+            "beta\n",
+            "composing document must not be saved mid-composition"
+        );
+        model.replace_text_in_range(None, "漢");
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(model.maybe_auto_save());
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "typed 漢beta\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closing_a_dirty_background_tab_saves_it_first() {
+        // Inside the debounce window: only the close itself can save.
+        let (mut model, dir, a, _) =
+            model_with_dirty_background_tab("close-saves", Duration::from_secs(60));
+        let index = model
+            .tabs
+            .tabs()
+            .iter()
+            .position(|tab| tab.path == a)
+            .unwrap();
+        assert!(model.close_tab(index).unwrap());
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "edited alpha\n");
+        assert!(!model.buffers.contains_key(&a));
+        assert!(model.tabs.tabs().iter().all(|tab| tab.path != a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closing_a_tab_whose_save_fails_keeps_it_open() {
+        let (mut model, dir, a, _) =
+            model_with_dirty_background_tab("close-fails", Duration::from_secs(60));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let index = model
+            .tabs
+            .tabs()
+            .iter()
+            .position(|tab| tab.path == a)
+            .unwrap();
+        assert!(model.close_tab(index).is_err());
+        assert!(model.tabs.tabs().iter().any(|tab| tab.path == a));
+        assert!(model.has_unsaved_changes(&a), "edits kept, still dirty");
+        assert_eq!(
+            model.buffers[&a].line(0),
+            Some("edited alpha"),
+            "edits stay in memory"
+        );
+    }
+
+    #[test]
+    fn quit_flush_saves_every_dirty_document() {
+        let (mut model, dir, a, b) =
+            model_with_dirty_background_tab("flush-all", Duration::from_secs(60));
+        model.insert_at_cursor("typed ");
+        assert!(model.flush_all().is_empty());
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "edited alpha\n");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "typed beta\n");
+        assert!(!model.has_unsaved_changes(&a) && !model.has_unsaved_changes(&b));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -650,7 +1006,7 @@ mod tests {
     #[test]
     fn palette_filters_files_and_commands() {
         let model = model_with_text("# hi\n");
-        let commands = model.filtered_palette_entries(true, "tab");
+        let commands = model.filtered_palette_entries(PaletteKind::Commands, "tab");
         assert!(commands.iter().any(|entry| entry.action == "tab_close"));
         assert!(
             !commands.iter().any(|entry| entry.action == "quick_open"),
