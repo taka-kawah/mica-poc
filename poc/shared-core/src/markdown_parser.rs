@@ -168,7 +168,7 @@ pub fn parse_line(line: &str, in_code_block: bool) -> (ParsedLine, bool) {
 
     // Quote: '>' at the start.
     if trimmed.starts_with('>') {
-        let marker_end = indent + 1 + usize::from(trimmed[1..].starts_with(' '));
+        let marker_end = indent + trimmed.strip_prefix("> ").map_or(1, |_| 2);
         return (
             ParsedLine {
                 kind: BlockKind::Quote,
@@ -295,7 +295,7 @@ fn parse_inline(line: &str, from: usize, to: usize) -> Vec<InlineSpan> {
         if bytes[cursor] == b'*' && !line[cursor..to].starts_with("**") {
             if let Some(close) = find_closing(line, cursor + 1, to, "*") {
                 // Do not treat the second * of a ** pair as italic close.
-                if close + 1 <= to && line[close..to].starts_with("**") {
+                if close < to && line[close..to].starts_with("**") {
                     cursor += 1;
                     continue;
                 }

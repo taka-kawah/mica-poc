@@ -35,6 +35,12 @@ pub struct AutoSaver {
     state: SaveState,
 }
 
+impl Default for AutoSaver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AutoSaver {
     /// Create an auto-saver with the default delay.
     pub fn new() -> Self {

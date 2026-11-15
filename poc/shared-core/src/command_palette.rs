@@ -74,7 +74,7 @@ pub fn filter_entries<'a>(query: &str, entries: &'a [PaletteEntry]) -> Vec<&'a P
         })
         .collect();
     // Stable sort keeps the original order for equal scores.
-    scored.sort_by(|left, right| right.0.cmp(&left.0));
+    scored.sort_by_key(|scored| std::cmp::Reverse(scored.0));
     scored.into_iter().map(|(_, entry)| entry).collect()
 }
 

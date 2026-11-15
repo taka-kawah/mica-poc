@@ -84,10 +84,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       # libxkbcommon-x11-dev is required: the GPUI platform crate links -lxkbcommon-x11 (missing it fails the bin link with exit 101).
+      # libfontconfig1-dev is required: the yeslogic-fontconfig-sys build script needs fontconfig.pc (missing it fails cargo test with exit 101).
       - name: Install GPUI system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev pkg-config cmake clang
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev pkg-config cmake clang
       - name: Test GPUI PoC
         run: cargo test -p mica-gpui-poc
       - name: Headless smoke test (Xvfb)
