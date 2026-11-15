@@ -41,7 +41,7 @@ import {
   livePreview,
   toggleTaskCheckboxAt,
 } from "./live-preview";
-import { saveTabContent } from "./auto-save";
+import { saveTabContent, type SaveOutcome } from "./auto-save";
 import "./style.css";
 
 /* ------------------------------------------------------------------ */
@@ -243,16 +243,20 @@ function onEditorEdited(): void {
  */
 let saveQueue: Promise<void> = Promise.resolve();
 
-function saveActiveTab(): Promise<void> {
+/** Resolves to the save's outcome, or null when there was nothing to save. */
+function saveActiveTab(): Promise<SaveOutcome | null> {
   const run = saveQueue.then(saveActiveTabNow);
-  saveQueue = run.catch(() => undefined);
+  saveQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
   return run;
 }
 
-async function saveActiveTabNow(): Promise<void> {
+async function saveActiveTabNow(): Promise<SaveOutcome | null> {
   const tab = activeTab();
   if (tab === null || !tab.dirty) {
-    return;
+    return null;
   }
   setSaveState("saving");
   // Only clears `dirty` when the buffer did not change during the
@@ -276,15 +280,16 @@ async function saveActiveTabNow(): Promise<void> {
       statusFile.textContent = `Save failed: ${String(outcome.error)}`;
       break;
   }
+  return outcome;
 }
 
 /** Flush a pending auto-save immediately (used before tab switches). */
-async function flushPendingSave(): Promise<void> {
+async function flushPendingSave(): Promise<SaveOutcome | null> {
   if (saveTimer !== undefined) {
     clearTimeout(saveTimer);
     saveTimer = undefined;
   }
-  await saveActiveTab();
+  return saveActiveTab();
 }
 
 /* ------------------------------------------------------------------ */
@@ -371,8 +376,25 @@ async function closeTab(index: number): Promise<void> {
   if (index < 0 || index >= tabs.length) {
     return;
   }
+  const tab = tabs[index];
   if (index === activeTabIndex) {
-    await flushPendingSave();
+    const outcome = await flushPendingSave();
+    if (tab.dirty) {
+      // An edit landed while the save was in flight ("changed"), or
+      // the write failed: keep the tab open so the text is not lost.
+      // On "changed" the edit restarted the auto-save timer, which
+      // writes the newer text; on "failed" the status bar already
+      // shows the error.
+      if (outcome?.kind !== "failed") {
+        statusFile.textContent = `Not closed: ${tab.path} was edited during save; auto-save will write it.`;
+      }
+      return;
+    }
+    // The tab list may have changed while awaiting the save.
+    index = tabs.indexOf(tab);
+    if (index < 0) {
+      return;
+    }
   }
   await invoke("close_tab", { index });
   tabs.splice(index, 1);
