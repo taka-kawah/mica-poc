@@ -69,7 +69,6 @@ pub fn encode_frame(message: &serde_json::Value) -> Vec<u8> {
     frame
 }
 
-/// Decode one length-framed message from a reader.
 /// Maximum frame size accepted by [`decode_frame`].
 ///
 /// The length prefix comes from the other end of the stdio bridge, so
@@ -79,6 +78,7 @@ pub fn encode_frame(message: &serde_json::Value) -> Vec<u8> {
 /// the 4 GiB worst case.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
+/// Decode one length-framed message from a reader.
 /// Returns `Ok(None)` on a clean end of stream.
 pub fn decode_frame(reader: &mut impl Read) -> std::io::Result<Option<serde_json::Value>> {
     let mut length_bytes = [0u8; 4];
