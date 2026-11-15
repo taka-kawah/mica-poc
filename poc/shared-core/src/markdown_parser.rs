@@ -15,7 +15,7 @@
 /// What kind of block a line is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind {
-    /// `#`, `##`, … up to `######`. `heading_level` is 1–6.
+    /// `#`, `##`, … up to `######`. `level` is 1–6.
     Heading { level: u8 },
     /// A list item (`-`, `*`, `+` or `1.`). May carry a checkbox.
     ListItem { checked: Option<bool> },
@@ -90,12 +90,24 @@ pub fn parse_line(line: &str, in_code_block: bool) -> (ParsedLine, bool) {
                 false,
             );
         }
+        // Interior line: the whole line is code content, one span, no
+        // markers (empty lines get no span, like empty plain text).
+        let spans = if line.is_empty() {
+            Vec::new()
+        } else {
+            vec![InlineSpan {
+                range: (0, line.len()),
+                opening_marker: None,
+                closing_marker: None,
+                style: SpanStyle::Code,
+            }]
+        };
         return (
             ParsedLine {
                 kind: BlockKind::CodeBlock,
                 block_marker: None,
                 content_range: (0, line.len()),
-                spans: Vec::new(),
+                spans,
             },
             true,
         );
@@ -382,6 +394,18 @@ mod tests {
         let (inside, still_open) = parse_line("let x = 1;", true);
         assert_eq!(inside.kind, BlockKind::CodeBlock);
         assert!(still_open);
+        // Interior lines carry one code span over the whole line.
+        assert_eq!(
+            inside.spans,
+            vec![InlineSpan {
+                range: (0, "let x = 1;".len()),
+                opening_marker: None,
+                closing_marker: None,
+                style: SpanStyle::Code,
+            }]
+        );
+        let (empty_inside, _) = parse_line("", true);
+        assert!(empty_inside.spans.is_empty());
         let (_, still_open) = parse_line("```", true);
         assert!(!still_open);
     }

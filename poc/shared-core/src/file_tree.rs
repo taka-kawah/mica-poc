@@ -38,17 +38,11 @@ pub fn scan_folder_with_exclusions(root: &Path, extra_excluded: &[&str]) -> Vec<
     let mut excluded: Vec<&str> = DEFAULT_EXCLUDED_NAMES.to_vec();
     excluded.extend_from_slice(extra_excluded);
     let mut entries = Vec::new();
-    scan_recursive(root, root, 0, &excluded, &mut entries);
+    scan_recursive(root, 0, &excluded, &mut entries);
     entries
 }
 
-fn scan_recursive(
-    root: &Path,
-    dir: &Path,
-    depth: usize,
-    excluded: &[&str],
-    entries: &mut Vec<FileTreeEntry>,
-) {
+fn scan_recursive(dir: &Path, depth: usize, excluded: &[&str], entries: &mut Vec<FileTreeEntry>) {
     let read_dir = match std::fs::read_dir(dir) {
         Ok(read_dir) => read_dir,
         Err(_) => return,
@@ -91,8 +85,7 @@ fn scan_recursive(
                     .unwrap_or(false),
         });
         if is_folder {
-            let _ = root; // root is kept for future relative-path display.
-            scan_recursive(root, &path, depth + 1, excluded, entries);
+            scan_recursive(&path, depth + 1, excluded, entries);
         }
     }
 }

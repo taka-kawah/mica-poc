@@ -262,7 +262,6 @@ fn build_display_line(
         .iter()
         .map(|segment| segment.text.as_str())
         .collect();
-    let _ = display_chars;
     if column_map.is_empty() {
         // Empty line: one display column mapping to buffer column 0.
         column_map.push(0);
@@ -318,6 +317,25 @@ mod tests {
         assert_eq!(display.buffer_column_for_display(2), 4);
         // Buffer column 2 (first '*') maps to display column 2.
         assert_eq!(display.display_column_for_buffer(2), 2);
+    }
+
+    #[test]
+    fn code_block_interior_line_is_one_monospace_segment() {
+        let line = "    println!(\"こんにちは\");";
+        let (display, still_in_block) = decorate_line(line, 3, Some(0), true);
+        assert!(still_in_block);
+        assert_eq!(display.display_text, line);
+        assert_eq!(display.segments.len(), 1);
+        assert!(display.segments[0].style.monospace);
+        assert!(!display.segments[0].style.dimmed);
+        assert_eq!(display.segments[0].style.size_factor, 1.0);
+        assert_eq!(display.segments[0].buffer_range, (0, line.len()));
+        // Identity column mapping: nothing is hidden inside code.
+        let char_count = line.chars().count();
+        assert_eq!(
+            display.display_to_buffer_columns,
+            (0..=char_count).collect::<Vec<_>>()
+        );
     }
 
     #[test]

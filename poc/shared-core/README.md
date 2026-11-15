@@ -44,6 +44,18 @@ the child page 「ライブプレビューの仕組み（事前調査）」:
 | `command_palette` | Subsequence fuzzy match, tight/early matches rank higher |
 | `wsl_bridge` | Length-framed JSON-RPC, method names, local-filesystem backend, `..` escape guard |
 
+### WSL bridge: what is not implemented
+
+The local backend answers `open_folder`, `list_dir`, `read_file`,
+`write_file`, `rename` (`{from, to}`, never overwrites an existing
+target) and `delete` (`{path}`; files, or folders with their
+contents; never the opened folder itself), plus `search`. The
+`fs_changed` notification is declared but **never sent**: there is
+no file watching in this PoC. There is also **no check for files
+changed on disk since they were opened** — saving overwrites
+external edits (the spec's modification-time conflict check is a
+later step).
+
 ## Parser coverage (documented subset)
 
 The parser is line-oriented and covers: headings `#`–`######`,

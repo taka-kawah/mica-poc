@@ -117,6 +117,8 @@ impl LocalBridgeBackend {
             METHOD_LIST_DIR => self.list_dir(&request.params),
             METHOD_READ_FILE => self.read_file(&request.params),
             METHOD_WRITE_FILE => self.write_file(&request.params),
+            METHOD_RENAME => self.rename(&request.params),
+            METHOD_DELETE => self.delete(&request.params),
             METHOD_SEARCH => self.search(&request.params),
             _ => Err(format!("unknown method: {}", request.method)),
         };
@@ -189,6 +191,50 @@ impl LocalBridgeBackend {
             .ok_or("write_file needs a string 'content'")?;
         let resolved = self.resolve(path)?;
         crate::auto_save::save_atomically(&resolved, content).map_err(|error| error.to_string())?;
+        Ok(serde_json::json!({"ok": true}))
+    }
+
+    /// `rename {from, to}`: move a file or folder. Both paths must stay
+    /// inside the opened folder, and an existing target is never
+    /// overwritten (the GUI must delete it first, explicitly).
+    fn rename(&self, params: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let from = params["from"]
+            .as_str()
+            .ok_or("rename needs a string 'from'")?;
+        let to = params["to"].as_str().ok_or("rename needs a string 'to'")?;
+        let resolved_from = self.resolve(from)?;
+        let resolved_to = self.resolve(to)?;
+        if resolved_from == normalise_path(&self.root) {
+            return Err("cannot rename the opened folder itself".to_string());
+        }
+        if std::fs::symlink_metadata(&resolved_from).is_err() {
+            return Err(format!("no such file or folder: {from}"));
+        }
+        if std::fs::symlink_metadata(&resolved_to).is_ok() {
+            return Err(format!("target already exists: {to}"));
+        }
+        std::fs::rename(&resolved_from, &resolved_to).map_err(|error| error.to_string())?;
+        Ok(serde_json::json!({"ok": true}))
+    }
+
+    /// `delete {path}`: remove a file, or a folder with its contents.
+    /// The opened folder itself cannot be deleted. Symlinks are
+    /// removed as links (their target is never followed).
+    fn delete(&self, params: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let path = params["path"]
+            .as_str()
+            .ok_or("delete needs a string 'path'")?;
+        let resolved = self.resolve(path)?;
+        if resolved == normalise_path(&self.root) {
+            return Err("cannot delete the opened folder itself".to_string());
+        }
+        let metadata = std::fs::symlink_metadata(&resolved).map_err(|error| error.to_string())?;
+        if metadata.is_dir() {
+            std::fs::remove_dir_all(&resolved)
+        } else {
+            std::fs::remove_file(&resolved)
+        }
+        .map_err(|error| error.to_string())?;
         Ok(serde_json::json!({"ok": true}))
     }
 
@@ -277,5 +323,90 @@ mod tests {
             params: serde_json::json!({"path": "../secret.md"}),
         };
         assert!(backend.handle(&escape).error.is_some());
+    }
+
+    fn request(id: u64, method: &str, params: serde_json::Value) -> BridgeRequest {
+        BridgeRequest {
+            jsonrpc: "2.0".to_string(),
+            id,
+            method: method.to_string(),
+            params,
+        }
+    }
+
+    #[test]
+    fn backend_rename_and_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("old.md"), "# Old").unwrap();
+        std::fs::write(dir.path().join("taken.md"), "# Taken").unwrap();
+        std::fs::create_dir(dir.path().join("folder")).unwrap();
+        std::fs::write(dir.path().join("folder/inner.md"), "x").unwrap();
+        let backend = LocalBridgeBackend::new(dir.path());
+
+        // Rename moves the file; the response echoes the id.
+        let response = backend.handle(&request(
+            1,
+            METHOD_RENAME,
+            serde_json::json!({"from": "old.md", "to": "new.md"}),
+        ));
+        assert_eq!(response.id, 1);
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert!(!dir.path().join("old.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("new.md")).unwrap(),
+            "# Old"
+        );
+        // Never overwrite an existing target.
+        let clash = backend.handle(&request(
+            2,
+            METHOD_RENAME,
+            serde_json::json!({"from": "new.md", "to": "taken.md"}),
+        ));
+        assert!(clash.error.is_some());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("taken.md")).unwrap(),
+            "# Taken"
+        );
+        // Escapes are rejected for both ends.
+        let escape = backend.handle(&request(
+            3,
+            METHOD_RENAME,
+            serde_json::json!({"from": "new.md", "to": "../outside.md"}),
+        ));
+        assert!(escape.error.is_some());
+        assert!(dir.path().join("new.md").exists());
+
+        // Delete removes a file and a folder with its contents.
+        let deleted = backend.handle(&request(
+            4,
+            METHOD_DELETE,
+            serde_json::json!({"path": "new.md"}),
+        ));
+        assert!(deleted.error.is_none(), "{:?}", deleted.error);
+        assert!(!dir.path().join("new.md").exists());
+        let deleted_folder = backend.handle(&request(
+            5,
+            METHOD_DELETE,
+            serde_json::json!({"path": "folder"}),
+        ));
+        assert!(deleted_folder.error.is_none(), "{:?}", deleted_folder.error);
+        assert!(!dir.path().join("folder").exists());
+        // The opened folder itself and escapes cannot be deleted.
+        for path in [".", "", "../x"] {
+            let refused = backend.handle(&request(
+                6,
+                METHOD_DELETE,
+                serde_json::json!({"path": path}),
+            ));
+            assert!(refused.error.is_some(), "delete {path:?} must fail");
+        }
+        assert!(dir.path().exists());
+        // Missing file: an error, not a panic.
+        let missing = backend.handle(&request(
+            7,
+            METHOD_DELETE,
+            serde_json::json!({"path": "nope.md"}),
+        ));
+        assert!(missing.error.is_some());
     }
 }
