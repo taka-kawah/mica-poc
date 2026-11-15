@@ -27,16 +27,22 @@
  *      widgets.
  * 3. Row-level cursor rule (the PoC rule from the Notion child page):
  *    markers are shown on the cursor line and hidden everywhere else.
- *    The cursor line is the line containing the selection head.
+ *    The cursor line is the line containing the selection head. A
+ *    node counts as on the cursor line when *any* line it spans holds
+ *    a selection head, so a multi-line construct (fenced code, block
+ *    quote, setext heading, or a link / emphasis split over lines)
+ *    that reaches the cursor line is shown raw in full.
  *
  * Japanese IME safety: CodeMirror's composition handling (EditContext /
- * contenteditable) owns the composing text, and composition always
- * happens at the cursor — which is exactly the line where this layer
- * applies *no* hiding or replacement. No decoration ever overlaps the
- * composition range, so recomputing decorations cannot flicker or
- * corrupt composing text. See `scripts/composition-roundtrip.mjs` for
- * the headless round-trip check and the README for the manual
- * Windows IME test item.
+ * contenteditable) owns the composing text, and composition happens
+ * at the selection head. Because of the rule above, every decoration
+ * this layer emits (hide, widget, mark or line class) lies on lines
+ * that hold no selection head, so the line being composed on carries
+ * no decoration from this layer. `scripts/live-preview-dom-check.mjs`
+ * checks this for multi-line links, emphasis and fenced code. This is
+ * a structural argument plus a headless DOM check, not a live IME
+ * test: see `scripts/composition-roundtrip.mjs` and the README for the
+ * manual Windows IME test item.
  *
  * What this layer covers:
  * - ATX headings (`#`–`######`) and setext headings (`===` / `---`)
@@ -48,8 +54,8 @@
  *
  * Out of PoC scope (documented, not silently missing): tables, math,
  * images (shown as a styled link, not rendered inline), footnotes,
- * nested emphasis, wiki links (`[[…]]`), and multi-line constructs
- * beyond fenced code. See README.md.
+ * nested emphasis, wiki links (`[[…]]`), and per-line reveal inside
+ * multi-line constructs (they reveal as a whole). See README.md.
  */
 
 import { syntaxTree } from "@codemirror/language";
@@ -77,6 +83,26 @@ const HEADING_LINE_CLASSES = [
   "cm-mica-heading-5",
   "cm-mica-heading-6",
 ] as const;
+
+/**
+ * Container nodes shown entirely raw (no decorations on the node or
+ * any of its children) while any of their lines holds a cursor.
+ * Their children (`CodeMark`, `QuoteMark`, `EmphasisMark`, …) can sit
+ * on other lines than the cursor, so checking each child on its own
+ * would leave half a construct hidden and half raw.
+ */
+const RAW_WHEN_ON_CURSOR_LINE = new Set([
+  "FencedCode",
+  "CodeBlock",
+  "Blockquote",
+  "SetextHeading",
+  "Emphasis",
+  "StrongEmphasis",
+  "Strikethrough",
+  "InlineCode",
+  "Link",
+  "Image",
+]);
 
 /** One decoration waiting to be added to the RangeSetBuilder. */
 interface PendingDecoration {
@@ -174,12 +200,23 @@ export function computeLivePreviewDecorations(
   const doc = state.doc;
 
   // Lines containing a selection head: markers stay visible there.
-  const cursorLines = new Set<number>();
+  const cursorLines: number[] = [];
   for (const range of state.selection.ranges) {
-    cursorLines.add(doc.lineAt(range.head).number);
+    cursorLines.push(doc.lineAt(range.head).number);
   }
-  const isCursorLine = (position: number): boolean =>
-    cursorLines.has(doc.lineAt(position).number);
+  /**
+   * True when any line the range `from`–`to` spans holds a selection
+   * head. A construct that starts above the cursor line but reaches it
+   * (a link or bold span split over two lines, a fenced code block, a
+   * block quote, a setext heading) counts as being on the cursor line.
+   */
+  const touchesCursorLine = (from: number, to: number): boolean => {
+    const firstLine = doc.lineAt(from).number;
+    const lastLine = doc.lineAt(to).number;
+    return cursorLines.some(
+      (line) => line >= firstLine && line <= lastLine,
+    );
+  };
 
   const pending: PendingDecoration[] = [];
   // Line number -> CSS classes for that whole line (merged so each
@@ -221,11 +258,18 @@ export function computeLivePreviewDecorations(
 
   const tree = syntaxTree(state);
   tree.iterate({
-    enter(node): void {
+    enter(node): boolean | void {
       const name = node.type.name;
       const from = node.from;
       const to = node.to;
-      const onCursorLine = isCursorLine(from);
+      const onCursorLine = touchesCursorLine(from, to);
+
+      // A styled construct that reaches the cursor line is shown raw
+      // in full: returning `false` skips its children too, so none of
+      // its markers (some of which sit on other lines) are hidden.
+      if (onCursorLine && RAW_WHEN_ON_CURSOR_LINE.has(name)) {
+        return false;
+      }
 
       switch (name) {
         // --- Headings -------------------------------------------------
@@ -369,8 +413,11 @@ export function computeLivePreviewDecorations(
         // --- Lists ----------------------------------------------------
         case "ListMark": {
           // Bullet / number markers stay visible (they are content,
-          // not hidden syntax) but are shown muted.
-          markRange(from, to, "cm-mica-list-marker");
+          // not hidden syntax) but are shown muted — except on the
+          // cursor line, which carries no decoration at all.
+          if (!onCursorLine) {
+            markRange(from, to, "cm-mica-list-marker");
+          }
           break;
         }
         case "TaskMarker": {

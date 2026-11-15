@@ -26,6 +26,7 @@ poc/tauri-codemirror/
   src/
     main.ts                     # app shell: tree, tabs, palette, autosave, keymap
     live-preview.ts             # CodeMirror 6 decoration layer (~500 lines)
+    auto-save.ts                # save step: snapshot, clear dirty only if unchanged
     style.css                   # proportional font, centred 720px body
   scripts/
     composition-roundtrip.mjs   # headless Japanese IME round-trip check
@@ -43,8 +44,9 @@ poc/tauri-codemirror/
 This directory is **not** a member of the root Cargo workspace:
 Tauri manages its own Rust project under `src-tauri/` (it has its own
 empty `[workspace]` table so Cargo does not attach it to the root
-workspace). It depends on `mica-shared-core` by path
-(`../../shared-core`).
+workspace). It depends on `mica-shared-core` by path (`../shared-core`
+from this folder; written `../../shared-core` in
+`src-tauri/Cargo.toml`, which is one level deeper).
 
 ## What the backend does (and does not do)
 
@@ -62,9 +64,26 @@ Every Tauri command in `src-tauri/src/lib.rs` delegates to
 | `default_folder` | `MICA_FOLDER` env var, then the repo's `sample-notes`, then `$HOME` |
 
 The frontend never touches the filesystem directly; it only calls
-these commands. Tabs, auto-save state, the keymap and the fuzzy
-matcher all live in shared-core, so they behave identically in the
-GPUI and egui PoCs.
+these commands. Atomic saves, keymap parsing and the fuzzy matcher
+come from shared-core, so they behave identically in the GPUI and
+egui PoCs.
+
+What does **not** live in shared-core here:
+
+- **The tab list the UI shows.** The frontend keeps its own tab
+  array (order, active tab, buffer content, dirty flag) in
+  `src/main.ts`. It calls `open_tab` / `close_tab` so the backend's
+  `TabManager` mirrors open and close, but never reads it back.
+  Switching the UI to `list_tabs` would also mean moving buffer
+  content and the active index to the backend, which is beyond this
+  PoC.
+- **Auto-save timing and dirty state.** The 1000 ms debounce and the
+  dirty flag are frontend code (`src/main.ts`, `src/auto-save.ts`);
+  only the atomic write is shared-core.
+- **Unused commands.** `list_files`, `list_commands` and `list_tabs`
+  are registered and work, but the frontend does not call them
+  (the tree comes from `open_folder`, the palette from
+  `search_palette`, tabs from the frontend's own list).
 
 ## Live preview — what it covers
 
@@ -73,6 +92,10 @@ Lezer Markdown syntax tree on every document/selection change and
 computes decorations (`Decoration.mark` / `.line` / `.replace` +
 widgets). Cursor-aware reveal is row-level: the line containing the
 selection head shows its raw markers; all other lines hide theirs.
+A construct counts as on the cursor line when *any* of its lines
+holds the cursor, so a fenced code block, block quote, setext
+heading, or a link / bold / italic span split over two lines is
+shown raw in full while the cursor is on any of its lines.
 Replaced widgets (checkboxes, rules) are `atomicRanges`, so the
 cursor skips over them instead of stopping on invisible characters.
 
@@ -86,7 +109,8 @@ rules.
 **Not covered (out of PoC scope):** tables, math, images (a link to
 an image is styled as a link, the image itself is not rendered
 inline), footnotes, nested emphasis, wiki links `[[…]]`, and
-multi-line constructs beyond fenced code. The heading marker hides
+per-line reveal inside multi-line constructs (they reveal as a
+whole, see above). The heading marker hides
 the `#`s and the spaces after them; a setext underline is hidden on
 non-cursor lines.
 
@@ -98,12 +122,19 @@ not assumed):
    no checkbox widget is produced. The layer passes the GFM
    language explicitly: `markdown({ base: markdownLanguage })`.
    `scripts/live-preview-dom-check.mjs` guards this.
-2. **Composition safety is structural.** CodeMirror owns the
-   composing text (EditContext / contenteditable), and composition
-   always happens at the cursor — exactly the line where this layer
-   applies *no* hiding or replacement. No decoration ever overlaps
-   the composition range, so recomputing decorations cannot flicker
-   or corrupt composing text.
+2. **Composition safety depends on the cursor-line rule covering
+   whole constructs.** CodeMirror owns the composing text
+   (EditContext / contenteditable), and composition happens at the
+   selection head. The first version decided "on the cursor line"
+   from the line where a construct *starts*, so a link or bold span
+   split over two lines, or a fenced code block, still hid markers
+   or applied styling on the cursor line. Now every decoration the
+   layer emits (hide, widget, mark or line class) lies on lines
+   holding no selection head, so the line being composed on carries
+   no live-preview decoration. `npm run test:dom` checks this for a
+   split link, split bold and a fenced code block with the cursor on
+   a middle line. That is a structural argument plus a headless DOM
+   check — not proof from a live IME session (see below).
 
 ## Japanese IME
 
@@ -148,8 +179,8 @@ Headless checks (no display needed):
 
 ```sh
 npm run test:ime       # Japanese composition round-trip (10 checks)
-npm run test:dom       # live-preview DOM check in jsdom (9 checks)
-cd src-tauri && cargo test        # backend commands vs sample-notes (6 tests)
+npm run test:dom       # live-preview DOM check in jsdom + auto-save race (26 checks)
+cd src-tauri && cargo test        # backend commands vs sample-notes (7 tests)
 cd src-tauri && cargo fmt --check # Rust formatting
 ```
 
@@ -157,7 +188,7 @@ The app opens `sample-notes/` by default. Set `MICA_FOLDER` to open
 a different folder on startup, or type a path in the top bar.
 Keyboard: `Ctrl+P` Quick Open, `Ctrl+Shift+P` command palette,
 `Ctrl+Shift+F` search in folder, `Ctrl+B` toggle tree, `Ctrl+Tab`
-next tab, `Ctrl+W` close tab, `Ctrl+S` save now. The tree uses
+next tab (`tab_recent_next`), `Ctrl+W` close tab, `Ctrl+S` save now. The tree uses
 `j`/`k`/`l`/`h` when focused. Bindings come from
 `~/.config/mica/keymap.toml` when it exists (shown in the status
 bar), otherwise the built-in defaults (Notion §7).
@@ -208,12 +239,12 @@ Nothing below is claimed without a command behind it.
 | --- | --- | --- |
 | Frontend typecheck + build | `npm run build` | ✅ pass (tsc + vite, 7–10 s; JS bundle 518 kB, 180 kB gzip; chunk-size warning only — single bundle, fine for a PoC) |
 | Japanese IME round-trip | `npm run test:ime` | ✅ 10/10 checks pass |
-| Live-preview DOM | `npm run test:dom` | ✅ 9/9 checks pass (checkboxes, HR, heading reveal, cursor-line raw, bold, code) |
-| Rust tests | `cd src-tauri && cargo test` | ✅ 6/6 pass (first compile 8m47s; incremental seconds) |
+| Live-preview DOM | `npm run test:dom` | ✅ 26/26 checks pass (checkboxes, HR, heading reveal, cursor-line raw, bold, code; split link / split bold / fenced code with the cursor on a later line, each with a control; auto-save race) |
+| Rust tests | `cd src-tauri && cargo test` | ✅ 7/7 pass (first compile 8m47s; incremental seconds) |
 | Rust formatting | `cd src-tauri && cargo fmt --check` | ✅ clean |
 | Rust debug build | `cd src-tauri && cargo build` | ✅ pass, 2m36s; `target/debug/mica-tauri` is 197 MB (debug, unoptimized) |
 | App launches headless | `timeout 20 xvfb-run -a ./target/debug/mica-tauri` | ✅ stayed running the full 20 s (exit 124 = killed by timeout while alive). Only benign output: `libEGL warning: DRI3 error` (no GPU in the VM; software rendering). Note: a plain `cargo build` binary loads the **dev URL** (`http://localhost:1420`), so without a dev server it shows "Could not connect to localhost" — that is expected Tauri debug behaviour, not a bug; use `tauri dev` or the release bundle. |
-| App UI renders + works | `npx tauri dev` under Xvfb (display :97) + scripted click on `welcome.md` | ✅ renders and behaves (see `screenshot-xvfb.png`): folder auto-opened, tree lists both sample notes, tab opens, live preview renders (large heading, bold/italic/code/link, ☐/☑ checkboxes, hidden fences, quote border, HR). **One anomaly, recorded honestly:** an earlier run on the shared display :99 produced one frame showing raw Markdown with no decorations; the rerun on an isolated display (:97 — a sibling agent's Xvfb was also live on :98/:99 at the time) renders correctly, and the jsdom DOM check passes deterministically, so the :99 frame is attributed to display contention / a stale frame, not to the decoration layer. |
+| App UI renders + works | `npx tauri dev` under Xvfb (display :97) + scripted click on `welcome.md` | ✅ renders and behaves (see `screenshot-xvfb.png`): folder auto-opened, tree lists both sample notes, tab opens, live preview renders (large heading, bold/italic/code/link, ☐/☑ checkboxes, hidden fences, quote border, HR). **One anomaly, recorded honestly:** an earlier run on display :99, which other processes were also using at the time, produced one frame showing raw Markdown with no decorations; the rerun on an isolated display (:97) renders correctly, and the jsdom DOM check passes deterministically, so the :99 frame is attributed to display contention / a stale frame, not to the decoration layer. |
 | Release bundle | `npx tauri build` | ✅ **succeeded**, 9m50s (release compile). Binary `target/release/mica-tauri` is 11.8 MB. Bundles: `Mica_0.1.0_amd64.deb` 3.16 MiB, `Mica-0.1.0-1.x86_64.rpm` 3.17 MiB, `Mica_0.1.0_amd64.AppImage` 78.16 MiB (AppImage downloads linuxdeploy/AppRun at build time — needs network). |
 | Release binary launches | `target/release/mica-tauri` under Xvfb (display :97), no dev server running | ✅ renders the bundled frontend (top bar, tree, editor, status bar; keymap loaded). This confirms the release bundle does not depend on the Vite dev server. Note: launched from `$HOME`, it defaulted to opening `$HOME` as the folder (default-folder resolution is cwd-relative; set `MICA_FOLDER` for the release binary). Cold-start time was **not measured** — the window-title poll in the timing script never matched the window, so no startup number is claimed here. |
 
@@ -227,9 +258,10 @@ under Xvfb with no dev server and rendered the bundled UI.
 ## Limits (honest)
 
 - **Windows is untested here.** No visual check, no IME check, no
-  `cargo tauri build` on Windows. The Windows build is checked in
-  GitHub Actions (see `../../.github/workflows/`); run it before
-  trusting any Windows claim.
+  `cargo tauri build` on Windows. A GitHub Actions workflow for the
+  Windows build is **pending**: it exists locally but is not yet in
+  this repo (it lands once an upload route for `.github/workflows/`
+  is available). Until it has run, do not trust any Windows claim.
 - **Linux uses WebKitGTK, not Chromium.** Rendering, fonts and IME
   behaviour can differ from Windows' WebView2. The screenshot is
   WebKitGTK 2.52.6 under Xvfb (software rendering — no GPU).
@@ -240,7 +272,10 @@ under Xvfb with no dev server and rendered the bundled UI.
   measurement here.
 - **Commands not implemented in the frontend:** `new_file` and
   `rename` are known commands that report "not implemented in this
-  PoC" in the status bar instead of pretending to work. Tab restore
+  PoC" in the status bar instead of pretending to work.
+- **`tab_recent_next` (Ctrl+Tab) cycles by tab position, not
+  most-recently-used order** as the spec asks. PoC simplification;
+  the command name is kept so it matches the other PoCs. Tab restore
   across restarts, external-change watching, drag & drop, split view
   and vim mode are out of scope (Notion §2 / plan.md).
 - **Debug binary is big** (197 MB with debug info). Release size is

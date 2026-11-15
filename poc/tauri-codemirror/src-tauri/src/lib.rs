@@ -398,7 +398,13 @@ fn search_palette(
 /// exists, otherwise the shared-core built-in defaults (Notion §7).
 #[tauri::command]
 fn load_keymap() -> Result<KeymapInfoDto, String> {
-    let keymap_path = home_dir().join(".config").join("mica").join("keymap.toml");
+    load_keymap_from_home(&home_dir())
+}
+
+/// `load_keymap` with the home directory passed in, so tests can
+/// point it at a scratch directory instead of the real `$HOME`.
+fn load_keymap_from_home(home: &Path) -> Result<KeymapInfoDto, String> {
+    let keymap_path = home.join(".config").join("mica").join("keymap.toml");
     let (source, location, text) = match std::fs::read_to_string(&keymap_path) {
         Ok(text) => (
             "file".to_string(),
@@ -573,8 +579,8 @@ mod tests {
 
     #[test]
     fn keymap_file_is_used_when_present() {
-        // Build a keymap the way load_keymap reads it, from a temp
-        // home directory, and check the binding list reflects it.
+        // Run load_keymap's logic against a temp home directory that
+        // holds a keymap file, and check the file wins over defaults.
         let scratch = tempfile::tempdir().unwrap();
         let config_dir = scratch.path().join(".config").join("mica");
         fs::create_dir_all(&config_dir).unwrap();
@@ -583,9 +589,25 @@ mod tests {
             "[global]\n\"ctrl+o\" = \"open_folder\"\n",
         )
         .unwrap();
-        let text = fs::read_to_string(config_dir.join("keymap.toml")).unwrap();
-        let bindings = keymap_bindings_from_toml(&text).unwrap();
-        assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].command, "open_folder");
+        let info = load_keymap_from_home(scratch.path()).unwrap();
+        assert_eq!(info.source, "file");
+        assert_eq!(
+            info.location,
+            config_dir.join("keymap.toml").to_string_lossy()
+        );
+        assert_eq!(info.bindings.len(), 1);
+        assert_eq!(info.bindings[0].command, "open_folder");
+    }
+
+    #[test]
+    fn keymap_defaults_used_when_file_missing() {
+        // An empty home directory has no keymap file: defaults load.
+        let scratch = tempfile::tempdir().unwrap();
+        let info = load_keymap_from_home(scratch.path()).unwrap();
+        assert_eq!(info.source, "defaults");
+        assert!(info
+            .bindings
+            .iter()
+            .any(|binding| binding.command == "quick_open"));
     }
 }

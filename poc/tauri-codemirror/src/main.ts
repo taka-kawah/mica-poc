@@ -6,15 +6,22 @@
  * palette / Quick Open overlay, and the status bar.
  *
  * Everything about files lives in the Rust backend (`src-tauri/`), which
- * delegates to `mica-shared-core` for the file tree, tabs, atomic
- * auto-save, keymap, command-palette fuzzy matching and the WSL bridge
- * stub. The frontend never touches the filesystem directly; it only
- * calls Tauri commands (`invoke`).
+ * delegates to `mica-shared-core` for the file tree, atomic saves,
+ * keymap, command-palette fuzzy matching and the WSL bridge stub. The
+ * frontend never touches the filesystem directly; it only calls Tauri
+ * commands (`invoke`).
+ *
+ * Tabs: the backend mirrors open/close into shared-core's `TabManager`
+ * (`open_tab` / `close_tab`), but the tab list the UI renders — order,
+ * active tab, buffer content, dirty flag — is the frontend's own
+ * `tabs` array below. The backend's copy is not read back.
  *
  * Auto-save: edits mark the active tab dirty and restart a 1000 ms
  * debounce timer (Notion §7 `auto_save_delay_ms = 1000`). When the
  * timer fires, the tab is saved through the backend's atomic save and
- * the status bar shows Saving → Saved → Clean.
+ * the status bar shows Saving → Saved → Clean. An edit made while the
+ * write is in flight keeps the tab dirty (src/auto-save.ts), and saves
+ * are queued so they land on disk in order.
  *
  * Keymap: loaded once from the backend (`load_keymap`), which reads
  * `~/.config/mica/keymap.toml` and falls back to the shared-core
@@ -34,6 +41,7 @@ import {
   livePreview,
   toggleTaskCheckboxAt,
 } from "./live-preview";
+import { saveTabContent } from "./auto-save";
 import "./style.css";
 
 /* ------------------------------------------------------------------ */
@@ -228,20 +236,45 @@ function onEditorEdited(): void {
   saveTimer = setTimeout(() => void saveActiveTab(), AUTO_SAVE_DELAY_MS);
 }
 
-async function saveActiveTab(): Promise<void> {
+/**
+ * Saves run one at a time, in order: a save started while another is
+ * in flight waits for it, so an older snapshot can never land on disk
+ * after a newer one.
+ */
+let saveQueue: Promise<void> = Promise.resolve();
+
+function saveActiveTab(): Promise<void> {
+  const run = saveQueue.then(saveActiveTabNow);
+  saveQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function saveActiveTabNow(): Promise<void> {
   const tab = activeTab();
   if (tab === null || !tab.dirty) {
     return;
   }
   setSaveState("saving");
-  try {
-    await invoke("save_file", { path: tab.path, content: tab.content });
-    tab.dirty = false;
-    setSaveState("saved");
-    renderStatusFile();
-  } catch (error) {
-    setSaveState("dirty");
-    statusFile.textContent = `Save failed: ${String(error)}`;
+  // Only clears `dirty` when the buffer did not change during the
+  // write (see src/auto-save.ts for the race this prevents).
+  const outcome = await saveTabContent(tab, (path, content) =>
+    invoke("save_file", { path, content }),
+  );
+  switch (outcome.kind) {
+    case "saved":
+      setSaveState("saved");
+      renderStatusFile();
+      break;
+    case "changed":
+      // Edited mid-save: the edit already restarted the auto-save
+      // timer, which will write the newer text.
+      setSaveState("dirty");
+      renderStatusFile();
+      break;
+    case "failed":
+      setSaveState("dirty");
+      statusFile.textContent = `Save failed: ${String(outcome.error)}`;
+      break;
   }
 }
 
@@ -362,6 +395,11 @@ async function closeTab(index: number): Promise<void> {
   renderStatusFile();
 }
 
+/**
+ * `tab_recent_next` (Ctrl+Tab). PoC simplification: this cycles by tab
+ * *position*, not most-recently-used order as the spec asks. The
+ * command name stays the same as in the other PoCs.
+ */
 function focusNextTab(): void {
   if (tabs.length === 0) {
     return;

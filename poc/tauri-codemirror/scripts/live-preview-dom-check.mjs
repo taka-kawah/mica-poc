@@ -19,6 +19,15 @@
  * - the `## Live preview` heading line carries its heading class
  *   and the `##` marker text is not in the DOM
  * - the cursor line (line 1) still shows its raw `#` marker
+ * - multi-line constructs reaching the cursor line (a link and a bold
+ *   span split over two lines with the cursor on the second line, a
+ *   fenced code block with the cursor on a middle line) are shown raw
+ *   in full and leave the cursor line undecorated; each has a control
+ *   run with the cursor elsewhere proving the markers do get hidden
+ * - auto-save race (src/auto-save.ts): an edit made while a save is
+ *   in flight keeps the tab dirty, so the newer text is saved next;
+ *   a failed write keeps it dirty too (pure node, no DOM needed — it
+ *   lives here so it runs with the existing headless checks)
  *
  * jsdom is not a browser: layout is all zeros, so this checks DOM
  * structure, not pixels. The Xvfb screenshot in the README is the
@@ -33,6 +42,7 @@ import { JSDOM } from "jsdom";
 
 const projectRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const bundlePath = path.join(projectRoot, ".tmp-live-preview-bundle.mjs");
+const autoSaveBundlePath = path.join(projectRoot, ".tmp-auto-save-bundle.mjs");
 
 let failures = 0;
 function check(name, actual, expected) {
@@ -150,8 +160,157 @@ try {
     true,
   );
   view.destroy();
+
+  // --- Multi-line constructs reaching the cursor line ----------------
+  // A construct that starts above the cursor line but reaches it must
+  // be shown raw in full, and the cursor line must carry no decoration
+  // from the live-preview layer (that is the composition-safety rule).
+  // Each case has a control run with the cursor on line 1, proving
+  // the same markers *are* hidden when the cursor is elsewhere.
+
+  /** Render `doc` with the cursor at the start of line `cursorLine`. */
+  function renderAt(doc, cursorLine) {
+    const caseHost = document.createElement("div");
+    document.body.appendChild(caseHost);
+    const caseView = new EditorView({
+      parent: caseHost,
+      state: EditorState.create({
+        doc,
+        extensions: [...livePreviewModule.livePreview],
+      }),
+    });
+    caseView.dispatch({
+      selection: { anchor: caseView.state.doc.line(cursorLine).from },
+    });
+    return caseView;
+  }
+  /** Rendered text of 1-based line `number` (all lines fit in jsdom). */
+  function lineText(caseView, number) {
+    return caseView.dom.querySelectorAll(".cm-line")[number - 1]?.textContent;
+  }
+  /** True when line `number` carries no live-preview decoration. */
+  function lineUndecorated(caseView, number) {
+    const lineElement = caseView.dom.querySelectorAll(".cm-line")[number - 1];
+    if (lineElement === undefined) {
+      return false;
+    }
+    const decorated = (node) =>
+      [...node.classList].some((name) => name.startsWith("cm-mica"));
+    return (
+      !decorated(lineElement) &&
+      [...lineElement.querySelectorAll("*")].every((node) => !decorated(node)) &&
+      lineElement.textContent === caseView.state.doc.line(number).text
+    );
+  }
+
+  // Link split over two lines, cursor on the second line.
+  const linkDoc = "Intro line\n\nSee [split\nlink](http://x) here.\n\nEnd.";
+  let caseView = renderAt(linkDoc, 4);
+  check(
+    "split link: URL tail visible on cursor line",
+    lineText(caseView, 4)?.includes("](http://x)") ?? false,
+    true,
+  );
+  check(
+    "split link: opening [ visible on line above",
+    lineText(caseView, 3)?.includes("[split") ?? false,
+    true,
+  );
+  check("split link: cursor line undecorated", lineUndecorated(caseView, 4), true);
+  caseView.destroy();
+  caseView = renderAt(linkDoc, 1);
+  check(
+    "split link control: URL hidden off-cursor",
+    lineText(caseView, 4)?.includes("](http") ?? true,
+    false,
+  );
+  caseView.destroy();
+
+  // Bold split over two lines, cursor on the second line.
+  const boldDoc = "Intro line\n\nSome **bold\ntext** here.\n\nEnd.";
+  caseView = renderAt(boldDoc, 4);
+  check(
+    "split bold: closing ** visible on cursor line",
+    lineText(caseView, 4)?.includes("**") ?? false,
+    true,
+  );
+  check("split bold: cursor line undecorated", lineUndecorated(caseView, 4), true);
+  caseView.destroy();
+  caseView = renderAt(boldDoc, 1);
+  check(
+    "split bold control: ** hidden off-cursor",
+    lineText(caseView, 4)?.includes("**") ?? true,
+    false,
+  );
+  caseView.destroy();
+
+  // Fenced code block, cursor on a middle line.
+  const fenceDoc =
+    "Intro line\n\n```js\nconst a = 1;\nconst b = 2;\n```\n\nEnd.";
+  caseView = renderAt(fenceDoc, 4);
+  check("fenced code: opening fence visible", lineText(caseView, 3), "```js");
+  check("fenced code: closing fence visible", lineText(caseView, 6), "```");
+  check("fenced code: cursor line undecorated", lineUndecorated(caseView, 4), true);
+  caseView.destroy();
+  caseView = renderAt(fenceDoc, 1);
+  check("fenced code control: fence hidden off-cursor", lineText(caseView, 3), "");
+  check(
+    "fenced code control: code styled off-cursor",
+    caseView.dom.querySelectorAll(".cm-mica-code-block").length > 0,
+    true,
+  );
+  caseView.destroy();
+
+  // --- Auto-save race (src/auto-save.ts) -----------------------------
+  // An edit lands while the write is in flight: the tab must stay
+  // dirty so the restarted timer saves the newer text.
+  execFileSync(
+    path.join(projectRoot, "node_modules", ".bin", "esbuild"),
+    [
+      path.join(projectRoot, "src", "auto-save.ts"),
+      "--bundle",
+      "--format=esm",
+      `--outfile=${autoSaveBundlePath}`,
+      "--log-level=error",
+    ],
+    { stdio: "inherit" },
+  );
+  const { saveTabContent } = await import(autoSaveBundlePath);
+  const written = [];
+  const tab = { path: "/notes/a.md", content: "first", dirty: true };
+  const outcome = await saveTabContent(tab, async (filePath, content) => {
+    written.push(content);
+    // The user types while the backend write is still running.
+    tab.content = "first + newer";
+    tab.dirty = true;
+  });
+  check(
+    "auto-save: edit during save reported as changed",
+    outcome.kind,
+    "changed",
+  );
+  check("auto-save: edit during save keeps tab dirty", tab.dirty, true);
+  const second = await saveTabContent(tab, async (filePath, content) => {
+    written.push(content);
+  });
+  check("auto-save: follow-up save writes newer text", written.join(" | "), "first | first + newer");
+  check(
+    "auto-save: follow-up save leaves tab clean",
+    `${second.kind}/${tab.dirty}`,
+    "saved/false",
+  );
+  const failing = { path: "/notes/b.md", content: "x", dirty: true };
+  const failed = await saveTabContent(failing, async () => {
+    throw new Error("disk full");
+  });
+  check(
+    "auto-save: failed write keeps tab dirty",
+    `${failed.kind}/${failing.dirty}`,
+    "failed/true",
+  );
 } finally {
   fs.rmSync(bundlePath, { force: true });
+  fs.rmSync(autoSaveBundlePath, { force: true });
 }
 
 if (failures > 0) {
