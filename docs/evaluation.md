@@ -158,9 +158,9 @@ makes Mica GPL. The risk is procedural, not legal, if the boundary in
 
 **Tauri + CodeMirror 6 is the most promising option on the measured
 evidence.** It wins the axes that are about being an editor — live-preview
-ease, proportional font/layout, visual polish, maturity/docs, license —
-by a clear margin (29/35 vs egui 24, GPUI 20), and its PoC is the most
-complete end-to-end editor of the three (the only one with clickable
+ease, proportional font/layout, visual polish, maturity/docs — by a clear
+margin (29/35 vs egui 24, GPUI 20), and matches egui on license (5/5), and
+its PoC is the most complete end-to-end editor of the three (the only one with clickable
 task checkboxes, setext headings, and a real text-editing engine underneath).
 Its weaknesses are known and bounded: build/startup friction on Linux,
 cold start and 5,000-line smoothness unmeasured, and live IME untested on
