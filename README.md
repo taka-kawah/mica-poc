@@ -4,8 +4,8 @@ Proof-of-concept builds for **Mica**, a custom Markdown editor:
 Obsidian's pleasant writing experience, but WSL-first,
 keyboard-centric, and with no vault.
 
-> **Status:** PoC code lands in follow-up PRs; sections below describe
-> the target state.
+> **Status:** Shared core, egui PoC and GPUI PoC are in this repo;
+> the Tauri PoC and CI workflows land in a follow-up PR.
 
 Spec: Notion 「Mica 仕様メモ（自作マークダウンエディタ）」 —
 see [`docs/notion-spec-summary.md`](docs/notion-spec-summary.md).
