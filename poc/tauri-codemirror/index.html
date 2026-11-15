@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mica — Tauri + CodeMirror 6 PoC</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="top-bar">
+        <input
+          id="folder-input"
+          type="text"
+          placeholder="Folder path…"
+          spellcheck="false"
+          aria-label="Folder path"
+        />
+        <button id="open-folder-button" type="button">Open folder</button>
+        <button id="toggle-tree-button" type="button" title="Toggle file tree (Ctrl+B)">
+          Tree
+        </button>
+        <span id="save-state" role="status">Clean</span>
+      </header>
+      <div id="main">
+        <aside id="file-tree-pane" aria-label="File tree">
+          <div id="file-tree" tabindex="0" role="tree" aria-label="Files"></div>
+        </aside>
+        <section id="editor-pane">
+          <div id="tab-bar" role="tablist" aria-label="Open files"></div>
+          <div id="editor-host"></div>
+          <div id="empty-state">
+            Open a folder, then open a Markdown file from the tree
+            (or press Ctrl+P for Quick Open).
+          </div>
+        </section>
+      </div>
+      <footer id="status-bar">
+        <span id="status-file">No file open</span>
+        <span id="status-cursor">Ln 1, Col 1</span>
+        <span id="status-keymap">Keymap: loading…</span>
+      </footer>
+      <div id="palette-overlay" hidden>
+        <div id="palette">
+          <input
+            id="palette-input"
+            type="text"
+            placeholder="Type to search…"
+            spellcheck="false"
+            aria-label="Command palette"
+          />
+          <ul id="palette-list" role="listbox" aria-label="Results"></ul>
+          <div id="palette-hint">↑↓ to move · Enter to run · Esc to close</div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

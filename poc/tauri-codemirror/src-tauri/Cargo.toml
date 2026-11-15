@@ -1,0 +1,28 @@
+[package]
+name = "mica-tauri"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Mica PoC: Tauri 2 backend for the CodeMirror 6 editor. Delegates file tree, tabs, auto-save, keymap, command palette and the WSL bridge stub to mica-shared-core."
+
+# This PoC is deliberately NOT a member of the root Cargo workspace:
+# Tauri manages its own Rust project under src-tauri/. The empty
+# [workspace] table makes this directory its own workspace root so
+# Cargo does not try to attach it to ../../Cargo.toml.
+[workspace]
+
+[build-dependencies]
+# Note: tauri-build does NOT track the tauri core version. tauri 2.12.5
+# depends on tauri-build ^2.7.4 (verified against crates.io on
+# 2026-11-15); there is no tauri-build 2.12.x.
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+mica-shared-core = { path = "../../shared-core" }
+
+[dev-dependencies]
+tempfile = "3"
