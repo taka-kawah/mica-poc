@@ -1,0 +1,446 @@
+/* Mica Tauri + CodeMirror 6 PoC — application styles.
+ *
+ * Typography follows the Notion spec (§3.1): proportional font for body
+ * text, monospace only in code spans/blocks, body centred with a
+ * max width of 720px. All live-preview rendering is done by the
+ * CodeMirror decoration layer in src/live-preview.ts; this file only
+ * styles the classes that layer emits.
+ */
+
+:root {
+  --font-body: "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Noto Sans Mono CJK JP", ui-monospace, "Cascadia Mono",
+    "JetBrains Mono", Consolas, monospace;
+  --background: #fafaf8;
+  --surface: #ffffff;
+  --border: #e4e2dc;
+  --text: #24221e;
+  --muted: #8a867d;
+  --accent: #4a6fa5;
+  --selection: #d7e5f5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.8;
+  color: var(--text);
+  background: var(--background);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#top-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+#folder-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+}
+
+button {
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+button:hover {
+  background: #f0eee9;
+}
+
+#save-state {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 64px;
+  text-align: right;
+}
+
+#save-state[data-state="dirty"] {
+  color: #b3541e;
+}
+
+#save-state[data-state="saving"] {
+  color: var(--accent);
+}
+
+#main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+#file-tree-pane {
+  width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  overflow-y: auto;
+}
+
+#file-tree-pane.hidden {
+  display: none;
+}
+
+#file-tree {
+  padding: 8px 4px;
+  outline: none;
+}
+
+.file-tree-entry {
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  user-select: none;
+}
+
+.file-tree-entry:hover {
+  background: #f0eee9;
+}
+
+.file-tree-entry.selected {
+  background: var(--selection);
+}
+
+.file-tree-entry.keyboard-focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.file-tree-entry.is-folder {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.file-tree-entry:not(.is-markdown):not(.is-folder) {
+  color: var(--muted);
+}
+
+#editor-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+#tab-bar {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  overflow-x: auto;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: var(--background);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tab.active {
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.tab .tab-dirty {
+  color: #b3541e;
+}
+
+.tab .tab-close {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+#editor-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#editor-host.hidden {
+  display: none;
+}
+
+#empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  padding: 24px;
+  text-align: center;
+}
+
+#empty-state.hidden {
+  display: none;
+}
+
+/* --- CodeMirror editor: centred 720px body, proportional font --- */
+
+.cm-editor {
+  height: 100%;
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.8;
+  background: var(--background);
+}
+
+.cm-editor .cm-scroller {
+  overflow-y: auto;
+}
+
+/* Centre the text column and cap its width (Notion §3.1: 720px). */
+.cm-editor .cm-content {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 24px 120px;
+}
+
+.cm-editor .cm-line {
+  padding: 0 2px;
+}
+
+.cm-editor .cm-cursor {
+  border-left-width: 2px;
+}
+
+.cm-editor .cm-selectionBackground,
+.cm-editor ::selection {
+  background: var(--selection);
+}
+
+/* --- Live-preview decoration classes (emitted by live-preview.ts) --- */
+
+.cm-mica-heading-1 {
+  font-size: 1.75em;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.cm-mica-heading-2 {
+  font-size: 1.5em;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.cm-mica-heading-3 {
+  font-size: 1.25em;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.cm-mica-heading-4,
+.cm-mica-heading-5,
+.cm-mica-heading-6 {
+  font-size: 1.1em;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.cm-mica-strong {
+  font-weight: 700;
+}
+
+.cm-mica-emphasis {
+  font-style: italic;
+}
+
+.cm-mica-strikethrough {
+  text-decoration: line-through;
+}
+
+/* Monospace only in code (spec §3.1). */
+.cm-mica-code,
+.cm-mica-code-block {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.cm-mica-code {
+  background: #f0eee9;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.cm-mica-code-block {
+  background: #f4f2ee;
+  border-radius: 6px;
+}
+
+.cm-mica-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.cm-mica-quote {
+  color: #6b675e;
+  border-left: 3px solid var(--border);
+  padding-left: 12px;
+}
+
+.cm-mica-checkbox {
+  display: inline-block;
+  width: 1.1em;
+  height: 1.1em;
+  margin-right: 6px;
+  border: 1.5px solid #9a958a;
+  border-radius: 4px;
+  vertical-align: -0.18em;
+  text-align: center;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.cm-mica-checkbox.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.cm-mica-horizontal-rule {
+  display: block;
+  border: none;
+  border-top: 1px solid #cfccc2;
+  margin: 0.9em 0;
+}
+
+.cm-mica-list-marker {
+  color: var(--muted);
+}
+
+/* --- Status bar --- */
+
+#status-bar {
+  display: flex;
+  gap: 16px;
+  padding: 4px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#status-file {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Command palette / Quick Open --- */
+
+#palette-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.25);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  z-index: 100;
+}
+
+#palette-overlay[hidden] {
+  display: none;
+}
+
+#palette {
+  width: min(560px, 90vw);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.18);
+  overflow: hidden;
+}
+
+#palette-input {
+  width: 100%;
+  padding: 12px 16px;
+  font: inherit;
+  font-size: 16px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  outline: none;
+}
+
+#palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+#palette-list li {
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+#palette-list li.selected {
+  background: var(--selection);
+}
+
+#palette-list li .palette-detail {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#palette-hint {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}

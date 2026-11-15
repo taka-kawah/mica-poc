@@ -1,0 +1,31 @@
+{
+  "dependencies": {
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
+    "@lezer/markdown": "1.8.1",
+    "@tauri-apps/api": "2.12.4"
+  },
+  "description": "Mica PoC: Tauri 2 + CodeMirror 6 Markdown editor with Obsidian-style live preview.",
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4",
+    "jsdom": "31.0.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.8"
+  },
+  "license": "MIT OR Apache-2.0",
+  "name": "mica-tauri-codemirror",
+  "private": true,
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test:ime": "node scripts/composition-roundtrip.mjs",
+    "test:dom": "node scripts/live-preview-dom-check.mjs"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}
