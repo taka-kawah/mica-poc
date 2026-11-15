@@ -113,9 +113,9 @@ ranking disagrees, and the PoC measurements will decide.
 
 ## Known limits (honest list)
 
-- All verification so far is on a Linux VM (Ubuntu 24.04, no display;
-  GUI runs were headless under Xvfb). **Windows visual and IME checks
-  have not been done** — they need a real Windows machine (the user's).
+- The PoCs are verified on a Linux VM (Ubuntu 24.04, no display;
+  GUI runs headless under Xvfb). **Windows visual and IME checks
+  have not been done** — they need a real Windows machine.
 - The WSL bridge in the PoCs is a protocol implementation plus an
   in-process local-filesystem backend. The real Windows transport
   (spawning the server with `wsl.exe`) is documented, not faked.

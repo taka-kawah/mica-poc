@@ -231,7 +231,7 @@ Comparison of Tauri + CodeMirror 6 vs egui (Rust), plus GPUI as an additional ca
 
 ### GPUI (Zed's UI framework) — additional candidate
 
-Rust GPU-rendered UI framework built by the Zed team for Zed. In November 2026, Discord announced it is rewriting its desktop app from Electron to Rust + GPUI (explicitly not Tauri; as stated in the spec; not independently verified).
+Rust GPU-rendered UI framework built by the Zed team for Zed. In November 2026, Discord announced it is rewriting its desktop app from Electron to Rust + GPUI (explicitly not Tauri — as stated in the spec, not independently verified).
 
 | Aspect | GPUI |
 | --- | --- |
@@ -265,7 +265,7 @@ Rust GPU-rendered UI framework built by the Zed team for Zed. In November 2026, 
 | Ferrite | ○ (WYSIWYG) | × | Rust + egui. Useful as a **reference implementation for the egui plan** (want to check its Japanese IME) |
 | Typora / MarkText / Zettlr, etc. | ○〜◎ | × | Run as Windows apps, so the same WSL file-watching problem |
 
-**Approach:** continue building it ourselves. Actually try mdedit (Tauri + CodeMirror) and Ferrite (egui) as decision material for §6.
+**Approach:** continue building it ourselves. Actually try mdedit (Tauri + CodeMirror) and Ferrite (egui) as decision material for spec §6.
 
 ## 7. Live-preview mechanism (child page)
 
@@ -338,7 +338,7 @@ Obsidian's editor component, CodeMirror 6, provides stages ②–⑤ almost enti
 - [ ] Which GUI: GPUI / Tauri + CodeMirror 6 / egui (first candidate GPUI; decided by the Japanese IME verification result)
 - [ ] Backend language (Rust / Go)
 - [x] **App name and CLI command name → Mica** （雲母。黒曜石のパロディ＋Windows 11のMica素材）; CLI is `mica` — **decided**
-- [ ] Message format between WSL backend and Windows GUI (JSON-RPC / binary) — the transport is decided: stdio (§11)
+- [ ] Message format between WSL backend and Windows GUI (JSON-RPC / binary) — the transport is decided: stdio (spec §11)
 - [ ] Whether to support Obsidian-style `[[wiki links]]`
 - [ ] How themes (light/dark) are handled
 
