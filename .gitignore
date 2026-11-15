@@ -1,0 +1,24 @@
+# Rust build outputs
+/target/
+**/target/
+
+# Node.js
+node_modules/
+dist/
+.pnpm-store/
+
+# Tauri
+poc/tauri-codemirror/src-tauri/target/
+poc/tauri-codemirror/src-tauri/gen/
+
+# Editor / OS artefacts
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+*.log
+
+# Local test artefacts
+*.tmp
+.mica-tmp
