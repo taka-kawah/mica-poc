@@ -112,7 +112,8 @@ makes Mica GPL. The risk is procedural, not legal, if the boundary in
   confirmed. PR #10 (merged `fbc8c0a`).
 - GitHub Actions: workflows are in the repo (`.github/workflows/poc-linux.yml`,
   `poc-windows.yml`; PR #11, merged `4114922`) and run on push/PR to `main`;
-  first CI run result on `main` not yet recorded here.
+  run #12 (2026-11-15) is green on Linux and Windows, all 8 jobs passing
+  (after fixes in PR #13 and PR #15).
 - IME test sheet: headless round-trip only (hiragana composition,
   conversion + confirmation, Backspace mid-composition, multi-byte
   boundaries). Live IME untested; candidate window untested.
@@ -129,8 +130,8 @@ makes Mica GPL. The risk is procedural, not legal, if the boundary in
 - Linux VM: `cargo test -p mica-gpui-poc` 19 passed; smoke test 9/9;
   Xvfb GUI launch verified; `cargo fmt` clean; cold start ~0.70 s
   (debug, lavapipe); debug binary 347 MB. PR #9 (merged `2a08368d`).
-- GitHub Actions: workflows in the repo via PR #11 (see Tauri above); first
-  CI run result on `main` not yet recorded here.
+- GitHub Actions: workflows in the repo via PR #11 (see Tauri above); run #12
+  (2026-11-15) is green on Linux and Windows.
 - IME test sheet: model-level preedit→preedit→commit test only
   (か → かん → commit 漢). Live IME untested; Windows candidate-window
   issue (#56149) known.
@@ -146,8 +147,8 @@ makes Mica GPL. The risk is procedural, not legal, if the boundary in
   (incl. Japanese IME composition simulation); Xvfb GUI launch + screenshot
   visually confirmed; cold start ~2.1 s; first build 4m36s; debug binary
   432 MB. PR #9 (merged `2a08368d`).
-- GitHub Actions: workflows in the repo via PR #11 (see Tauri above); first
-  CI run result on `main` not yet recorded here.
+- GitHub Actions: workflows in the repo via PR #11 (see Tauri above); run #12
+  (2026-11-15) is green on Linux and Windows.
 - IME test sheet: composition simulation only. Live IME untested;
   upstream CJK issues #7908, #7485 open.
 - What hurt most: the per-line widget's limits (no multi-line

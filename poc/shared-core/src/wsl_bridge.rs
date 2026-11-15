@@ -70,6 +70,15 @@ pub fn encode_frame(message: &serde_json::Value) -> Vec<u8> {
 }
 
 /// Decode one length-framed message from a reader.
+/// Maximum frame size accepted by [`decode_frame`].
+///
+/// The length prefix comes from the other end of the stdio bridge, so
+/// without a cap a corrupt length of up to 4 GiB would be allocated
+/// before the read fails. 64 MiB is far above any legitimate frame
+/// (bridge messages are small JSON requests and replies) and far below
+/// the 4 GiB worst case.
+pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
 /// Returns `Ok(None)` on a clean end of stream.
 pub fn decode_frame(reader: &mut impl Read) -> std::io::Result<Option<serde_json::Value>> {
     let mut length_bytes = [0u8; 4];
@@ -81,6 +90,12 @@ pub fn decode_frame(reader: &mut impl Read) -> std::io::Result<Option<serde_json
         Err(error) => return Err(error),
     }
     let length = u32::from_le_bytes(length_bytes) as usize;
+    if length > MAX_FRAME_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("frame length {length} exceeds the maximum of {MAX_FRAME_BYTES} bytes"),
+        ));
+    }
     let mut json_bytes = vec![0u8; length];
     reader.read_exact(&mut json_bytes)?;
     let value: serde_json::Value = serde_json::from_slice(&json_bytes)
@@ -301,6 +316,30 @@ mod tests {
         let decoded = decode_frame(&mut cursor).unwrap().unwrap();
         assert_eq!(decoded, message);
         assert!(decode_frame(&mut cursor).unwrap().is_none());
+    }
+
+    #[test]
+    fn oversized_frame_length_is_rejected_before_allocating() {
+        // Only the 4-byte length prefix, no payload. If decode_frame
+        // allocated and tried to read the body, it would fail with
+        // UnexpectedEof; InvalidData proves the cap check ran first.
+        let declared = (MAX_FRAME_BYTES + 1) as u32;
+        let mut cursor = Cursor::new(declared.to_le_bytes().to_vec());
+        let error = decode_frame(&mut cursor).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("exceeds the maximum"),
+            "unexpected message: {error}"
+        );
+        // Nothing past the length prefix was consumed.
+        assert_eq!(cursor.position(), 4);
+    }
+
+    #[test]
+    fn small_frame_still_decodes() {
+        let message = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {"ok": true}});
+        let mut cursor = Cursor::new(encode_frame(&message));
+        assert_eq!(decode_frame(&mut cursor).unwrap().unwrap(), message);
     }
 
     #[test]
