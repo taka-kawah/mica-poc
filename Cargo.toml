@@ -1,0 +1,19 @@
+# Mica PoC — Cargo workspace.
+#
+# Members are the framework-independent shared core and the two
+# native Rust PoCs (egui and GPUI). The Tauri PoC has its own Cargo
+# project under poc/tauri-codemirror/src-tauri because Tauri manages
+# its Rust project through the Tauri CLI.
+[workspace]
+resolver = "2"
+members = [
+    "poc/shared-core",
+    "poc/egui",
+    "poc/gpui",
+]
+
+[workspace.dependencies]
+mica-shared-core = { path = "poc/shared-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
